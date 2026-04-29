@@ -1,4 +1,5 @@
 #include "read_jplace_newick.hpp"
+#include "documented_function.hpp"
 #include "remote_file_helper.hpp"
 #include "table_function_common.hpp"
 #include "duckdb/common/vector_size.hpp"
@@ -221,7 +222,38 @@ TableFunction ReadJplaceNewickTableFunction::GetFunction() {
 }
 
 void ReadJplaceNewickTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Extract the reference Newick tree from jplace phylogenetic-placement
+files. Reads the `"tree"` field of each jplace JSON document and parses
+it as Newick. Schema is identical to (and `UNION ALL`-compatible with)
+[`read_newick`](../read_newick/) so the two can be mixed freely.
+
+Glob patterns and gzip-compressed files are supported.
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column to the output. |
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"path"},
+	    {
+	        "SELECT * FROM read_jplace_newick('placements.jplace');",
+	        "-- Combined workflow with placements + tree_resolve_placement\n"
+	        "CREATE TABLE ref_tree AS SELECT * FROM read_jplace_newick('placements.jplace');\n"
+	        "CREATE TABLE placements AS\n"
+	        "SELECT fragment AS fragment_id, edge_num::BIGINT AS edge_id,\n"
+	        "       like_weight_ratio, distal_length, pendant_length\n"
+	        "FROM read_jplace('placements.jplace');\n"
+	        "SELECT * FROM tree_resolve_placement('ref_tree', 'placements');",
+	        "-- Tree-shape comparison across files\n"
+	        "SELECT filepath, COUNT(*) AS num_nodes,\n"
+	        "       COUNT(*) FILTER (WHERE is_tip) AS num_tips\n"
+	        "FROM read_jplace_newick('results/*.jplace', include_filepath=true)\n"
+	        "GROUP BY filepath;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"phylogeny"});
 }
 
 } // namespace duckdb

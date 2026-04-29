@@ -1,5 +1,7 @@
 #include "read_ncbi.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
 
@@ -191,7 +193,41 @@ TableFunction ReadNCBITableFunction::GetFunction() {
 }
 
 void ReadNCBITableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Fetch GenBank metadata from NCBI by accession number — sequence
+description, organism, taxonomy id, length, molecule type, update date.
+Does **not** download the sequence itself; for that, use
+[`read_ncbi_fasta`](../read_ncbi_fasta/).
+
+Queries NCBI's [E-utilities](https://www.ncbi.nlm.nih.gov/books/NBK25501/)
+API. Requires `httpfs` (auto-loaded) and network access to
+`eutils.ncbi.nlm.nih.gov`. Rate-limited per NCBI guidelines: 3 req/s
+without an API key, 10 req/s with one. Transient failures (429/5xx)
+retry with exponential backoff.
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `api_key` | VARCHAR | _none_ | NCBI E-utilities API key. Bumps the rate limit from 3 → 10 req/s. |
+
+### Output schema
+
+`accession` (VARCHAR), `version` (INTEGER), `description` (VARCHAR),
+`organism` (VARCHAR), `taxonomy_id` (BIGINT), `length` (BIGINT),
+`molecule_type` (VARCHAR), `update_date` (DATE).
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"accession"},
+	    {
+	        "SELECT * FROM read_ncbi('NC_001416.1');",
+	        "-- Multiple accessions in one call\n"
+	        "SELECT accession, organism, length\n"
+	        "FROM read_ncbi(['NC_001416.1', 'NC_001422.1', 'NC_000913.3']);",
+	        "-- With API key for higher rate limits\n"
+	        "SELECT * FROM read_ncbi('NC_001416.1', api_key='your_key');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"ncbi-io"});
 }
 
 } // namespace duckdb

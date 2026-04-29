@@ -1,6 +1,8 @@
 #include "read_ena_searchable_fields.hpp"
 
+#include "documented_function.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include <sstream>
 
@@ -162,7 +164,36 @@ TableFunction ReadENASearchableFieldsTableFunction::GetFunction() {
 }
 
 void ReadENASearchableFieldsTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Enumerate the fields ENA's Portal API `/search?result=<result_type>`
+endpoint accepts as structured filters. Use this to discover what
+field names are available for a given result type before constructing
+a query — either a direct Portal API URL or a `WHERE tag = 'X'` filter
+on [`read_ena_attributes`](../read_ena_attributes/) that can be pushed
+down to the structured search.
+
+Issues exactly one HTTP call to `/returnFields?result=<result_type>&format=tsv`
+on first use, then caches for the remainder of the scan.
+`result_type` is validated as alphanumeric + `_`/`-`/`.` to prevent
+URL injection.
+
+Requires `httpfs` and network access to `www.ebi.ac.uk`.
+
+### Output schema
+
+`field_name` (VARCHAR), `type` (VARCHAR — `text`/`number`/`date`/etc.),
+`description` (VARCHAR, nullable).
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"result_type"},
+	    {
+	        "-- All searchable fields for samples\n"
+	        "SELECT field_name, type FROM ena_searchable_fields('sample') ORDER BY field_name;",
+	        "-- Check whether a specific field exists\n"
+	        "SELECT EXISTS (SELECT 1 FROM ena_searchable_fields('sample')\n"
+	        "               WHERE field_name = 'host_body_site') AS has_field;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"ena-io"});
 }
 
 } // namespace duckdb

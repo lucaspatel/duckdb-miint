@@ -1,5 +1,6 @@
 #include "SFFReader.hpp"
 #include "SequenceRecord.hpp"
+#include "documented_function.hpp"
 #include "remote_file_helper.hpp"
 #include "table_function_common.hpp"
 #include "duckdb/common/types.hpp"
@@ -170,6 +171,42 @@ TableFunction ReadSequencesSFFTableFunction::GetFunction() {
 }
 
 void ReadSequencesSFFTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Read SFF (Standard Flowgram Format) files from 454/Roche sequencing
+platforms. Schema matches [`read_fastx`](../read_fastx/) for `UNION ALL`
+compatibility, so 454 reads can be combined with FASTQ/FASTA in one
+query.
+
+Stdin (`-` / `/dev/stdin`) is **not** supported — SFF is binary and
+requires seeking. Multi-file reads use up to 8 threads (one per file).
+SFF index blocks (when present) are skipped automatically.
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column. |
+| `trim` | BOOLEAN | `true` | Apply quality + adapter clip positions from the SFF header to trim sequences and quality scores. With `false`, return the full untrimmed read. Overlapping clips (when `trim=true`) produce an empty sequence. |
+
+### Output schema
+
+Same as `read_fastx`: `sequence_index`, `read_id`, `comment` (always
+NULL for SFF), `sequence1`, `sequence2` (always NULL — single-end),
+`qual1`, `qual2` (always NULL).
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"filename"},
+	    {
+	        "SELECT * FROM read_sequences_sff('reads.sff') LIMIT 5;",
+	        "-- Untrimmed reads\n"
+	        "SELECT * FROM read_sequences_sff('reads.sff', trim=false);",
+	        "-- Multi-file glob with filepath tagging\n"
+	        "SELECT * FROM read_sequences_sff('data/*.sff', include_filepath=true);",
+	        "-- Combine 454 SFF and FASTQ in one pipeline\n"
+	        "SELECT read_id, sequence1 FROM read_sequences_sff('legacy.sff')\n"
+	        "UNION ALL\n"
+	        "SELECT read_id, sequence1 FROM read_fastx('current.fq');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"sequence-io"});
 }
 } // namespace duckdb

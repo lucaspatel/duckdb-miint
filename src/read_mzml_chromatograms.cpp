@@ -1,4 +1,5 @@
 #include "MzMLReader.hpp"
+#include "documented_function.hpp"
 #include "remote_file_helper.hpp"
 #include "table_function_common.hpp"
 #include "duckdb/common/types.hpp"
@@ -145,6 +146,31 @@ TableFunction ReadMzMLChromatogramsTableFunction::GetFunction() {
 }
 
 void ReadMzMLChromatogramsTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Read chromatogram data (TIC, BPC, SRM, SIC) from mzML files. Returns
+one row per chromatogram with `time_array` / `intensity_array` columns.
+For per-spectrum data instead, use [`read_mzml`](../read_mzml/).
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column. |
+
+### Output schema (7 columns)
+
+`chromatogram_index`, `chromatogram_id`, `chromatogram_type`
+(`'TIC'` / `'BPC'` / `'SRM'` / `'SIC'`), `precursor_mz`, `product_mz`,
+`time_array` (DOUBLE[]), `intensity_array` (DOUBLE[]).
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"filename"},
+	    {
+	        "SELECT chromatogram_id, chromatogram_type FROM read_mzml_chromatograms('sample.mzML');",
+	        "-- Per-time-point unnest for plotting\n"
+	        "SELECT chromatogram_id, UNNEST(time_array) AS t, UNNEST(intensity_array) AS i\n"
+	        "FROM read_mzml_chromatograms('sample.mzML') WHERE chromatogram_type = 'TIC';",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"mzml-io"});
 }
 } // namespace duckdb

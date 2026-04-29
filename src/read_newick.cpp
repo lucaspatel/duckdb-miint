@@ -1,4 +1,5 @@
 #include "read_newick.hpp"
+#include "documented_function.hpp"
 #include "remote_file_helper.hpp"
 #include "table_function_common.hpp"
 #include "duckdb/common/file_open_flags.hpp"
@@ -325,7 +326,47 @@ TableFunction ReadNewickTableFunction::GetFunction() {
 }
 
 void ReadNewickTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Read Newick phylogenetic tree files into a relation with one row per
+node. Standard Newick syntax, plus jplace edge identifiers (`{n}`).
+
+`filename` accepts a single path, a glob pattern (`'trees/*.nwk'`), a
+VARCHAR[] of literal paths, or `-` / `/dev/stdin`. Glob expansion is
+sorted alphabetically; arrays skip globbing. Gzip files (`.gz`)
+auto-detected.
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column to the output. |
+
+### Output schema
+
+- `node_index` (BIGINT) — 0-based node id (internal representation)
+- `name` (VARCHAR) — label, empty for unlabeled internal nodes
+- `branch_length` (DOUBLE, nullable) — branch length, NULL when absent
+- `edge_id` (BIGINT, nullable) — jplace `{n}` edge id, NULL when absent
+- `parent_index` (BIGINT, nullable) — parent's `node_index`; NULL for root
+- `is_tip` (BOOLEAN) — true if node has no children
+- `filepath` (VARCHAR, opt-in)
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"filename"},
+	    {
+	        "SELECT * FROM read_newick('tree.nwk');",
+	        "-- Tip names only\n"
+	        "SELECT name FROM read_newick('tree.nwk') WHERE is_tip;",
+	        "-- Tip vs internal counts\n"
+	        "SELECT COUNT(*) FILTER (WHERE is_tip) AS tips,\n"
+	        "       COUNT(*) FILTER (WHERE NOT is_tip) AS internal_nodes\n"
+	        "FROM read_newick('tree.nwk');",
+	        "-- Multiple trees with filepath tagging\n"
+	        "SELECT filepath, COUNT(*) AS num_nodes\n"
+	        "FROM read_newick('trees/*.nwk', include_filepath=true)\n"
+	        "GROUP BY filepath;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"phylogeny"});
 }
 
 } // namespace duckdb

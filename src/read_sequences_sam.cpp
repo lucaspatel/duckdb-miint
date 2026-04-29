@@ -1,5 +1,6 @@
 #include "SAMReader.hpp"
 #include "SAMRecord.hpp"
+#include "documented_function.hpp"
 #include "remote_file_helper.hpp"
 #include "table_function_common.hpp"
 #include "duckdb/common/types.hpp"
@@ -202,6 +203,37 @@ TableFunction ReadSequencesSamTableFunction::GetFunction() {
 }
 
 void ReadSequencesSamTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Read SAM/BAM files as sequence data — one row per read, with the
+sequence and quality columns but **without** the alignment-position
+columns. Schema is `UNION ALL`-compatible with
+[`read_fastx`](../read_fastx/) and `read_sequences_sff`, so SAM/BAM,
+FASTQ, and SFF data can be combined in one query.
+
+Use this when you only need the read sequences (e.g. for re-alignment,
+clustering, classification) and the alignment columns from
+`read_alignments` would just be discarded.
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column to the output. |
+
+### Output schema
+
+`sequence_index`, `read_id`, `comment`, `sequence1`, `sequence2`,
+`qual1`, `qual2` (`sequence2`/`qual2` populated for paired-end SAM/BAM).
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"filename"},
+	    {
+	        "SELECT read_id, sequence1 FROM read_sequences_sam('reads.bam') LIMIT 10;",
+	        "-- Mix BAM and FASTQ in one query (schemas match)\n"
+	        "SELECT read_id, sequence1 FROM read_sequences_sam('a.bam')\n"
+	        "UNION ALL\n"
+	        "SELECT read_id, sequence1 FROM read_fastx('b.fq');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"sequence-io"});
 }
 } // namespace duckdb

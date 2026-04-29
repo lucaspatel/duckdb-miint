@@ -1,5 +1,7 @@
 #include "read_ena_attributes.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -490,7 +492,56 @@ TableFunction ReadENAAttributesTableFunction::GetFunction() {
 }
 
 void ReadENAAttributesTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Fetch custom sample attributes from EBI/ENA via the Browser XML API.
+Returns ALL submitter-defined key/value attributes — including custom
+fields (primer sequences, custom identifiers, etc.) that aren't in the
+Portal API's fixed schema.
+
+Non-sample accessions are auto-resolved to their associated sample(s)
+via the Portal API. XML is fetched in batches of 50 samples and parsed
+for `<SAMPLE_ATTRIBUTE>` `<TAG>`/`<VALUE>` pairs.
+
+### Predicate pushdown (filters that hit the fast path)
+
+When the `WHERE` clause references `tag` (and optionally `value`) with
+equality-only operators, and every referenced tag is in the
+[`ena_searchable_fields`](../ena_searchable_fields/) allowlist, the
+scan switches from per-sample XML to a single
+`/search?result=sample` TSV request per batch — turning O(N) per-sample
+HTTP calls into one call per 200 samples. On a 33,000-sample study this
+drops the runtime from a ~3.7-minute rate-limit floor to a few seconds.
+
+Pushdown triggers when the filter is `AND` of `tag = 'X'`,
+`tag IN (...)`, or `tag = 'X' AND value = 'Y'` and every referenced
+`tag` is searchable.
+
+Pushdown is **declined** (falls back to XML, preserves correctness) on
+unsearchable tags, any `OR`/`LIKE`/`!=`/`NOT IN` in the filter tree,
+`value` constraints without a pinned `tag`, or filters on other
+columns. DuckDB always re-applies the original filter above the scan,
+so a wrong pushdown decision degrades to extra work, never wrong rows.
+
+### Output schema
+
+`sample_accession` (VARCHAR), `tag` (VARCHAR — attribute name),
+`value` (VARCHAR — attribute value).
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"accession"},
+	    {
+	        "SELECT * FROM read_ena_attributes('ERR1074767');",
+	        "-- Pivot wide for one study\n"
+	        "SELECT sample_accession,\n"
+	        "       MAX(value) FILTER (WHERE tag = 'collection date') AS collection_date,\n"
+	        "       MAX(value) FILTER (WHERE tag = 'geographic location (country and/or sea)') AS country\n"
+	        "FROM read_ena_attributes('PRJEB11419')\n"
+	        "GROUP BY sample_accession;",
+	        "-- Pushdown-enabled fast path\n"
+	        "SELECT sample_accession FROM read_ena_attributes('PRJEB11419')\n"
+	        "WHERE tag = 'host_body_site' AND value = 'UBERON:feces';",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"ena-io"});
 }
 
 } // namespace duckdb

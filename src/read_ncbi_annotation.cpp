@@ -1,5 +1,7 @@
 #include "read_ncbi_annotation.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <sstream>
 
 namespace duckdb {
@@ -243,7 +245,47 @@ TableFunction ReadNCBIAnnotationTableFunction::GetFunction() {
 }
 
 void ReadNCBIAnnotationTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Fetch feature annotations from NCBI by accession number, in
+GFF3-compatible schema (matches `read_gff` so they `UNION ALL` cleanly).
+Reads INSDC feature tables from E-utilities and converts to GFF3.
+
+Source is auto-detected from the accession prefix (`NC_`/`NM_` →
+RefSeq, etc.). Complement strand is reversed in the output;
+`codon_start` qualifier sets CDS phase. Complex locations (`join`,
+`complement(...)`) emit a warning and use the outer bounds.
+
+Requires `httpfs` and network access. Same rate-limiting as
+[`read_ncbi`](../read_ncbi/).
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `api_key` | VARCHAR | _none_ | NCBI API key (3 → 10 req/s). |
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column with the NCBI URL. |
+
+### Output schema (matches `read_gff`)
+
+`seqid`, `source`, `type`, `position`, `stop_position`, `score`,
+`strand`, `phase`, `attributes` (MAP).
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"accession"},
+	    {
+	        "SELECT * FROM read_ncbi_annotation('NC_001416.1');",
+	        "-- Genes only, with names\n"
+	        "SELECT seqid, position, stop_position, attributes['gene'] AS gene\n"
+	        "FROM read_ncbi_annotation('NC_001416.1') WHERE type = 'gene';",
+	        "-- Feature-type counts\n"
+	        "SELECT type, COUNT(*) AS n FROM read_ncbi_annotation('NC_001416.1')\n"
+	        "GROUP BY type ORDER BY n DESC;",
+	        "-- Multiple genomes in one call\n"
+	        "SELECT seqid, type, COUNT(*) AS n\n"
+	        "FROM read_ncbi_annotation(['NC_001416.1', 'NC_001422.1'])\n"
+	        "GROUP BY seqid, type ORDER BY seqid, n DESC;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"ncbi-io"});
 }
 
 } // namespace duckdb

@@ -1,5 +1,7 @@
 #include "read_ncbi_fasta.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <sstream>
 
 namespace duckdb {
@@ -220,7 +222,38 @@ TableFunction ReadNCBIFastaTableFunction::GetFunction() {
 }
 
 void ReadNCBIFastaTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Fetch FASTA sequences from NCBI by accession number. Schema matches
+[`read_fastx`](../../sequence-io/read_fastx/) so NCBI sequences combine
+freely with local FASTA/FASTQ via `UNION ALL`. Pipe-delimited FASTA
+headers (`gi|123|ref|NC_001416.1|description`) are parsed: accession →
+`read_id`, remainder → `comment`.
+
+Requires `httpfs` and network access to `eutils.ncbi.nlm.nih.gov`.
+Same rate-limiting and retry behavior as
+[`read_ncbi`](../read_ncbi/).
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `api_key` | VARCHAR | _none_ | NCBI API key (3 → 10 req/s). |
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column with the NCBI E-utilities URL. |
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"accession"},
+	    {
+	        "SELECT * FROM read_ncbi_fasta('NC_001416.1');",
+	        "-- Combine NCBI + local FASTA in one query (schemas match read_fastx)\n"
+	        "SELECT read_id, sequence1 FROM read_ncbi_fasta('NC_001416.1')\n"
+	        "UNION ALL\n"
+	        "SELECT read_id, sequence1 FROM read_fastx('local.fasta');",
+	        "-- Use as alignment reference\n"
+	        "CREATE TABLE reference AS SELECT * FROM read_ncbi_fasta('NC_001416.1');\n"
+	        "CREATE TABLE reads AS SELECT * FROM read_fastx('reads.fastq');\n"
+	        "SELECT * FROM align_minimap2('reads', 'reference');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"ncbi-io"});
 }
 
 } // namespace duckdb

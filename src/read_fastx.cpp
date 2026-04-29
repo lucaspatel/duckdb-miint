@@ -1,5 +1,6 @@
 #include "SequenceReader.hpp"
 #include "SequenceRecord.hpp"
+#include "documented_function.hpp"
 #include "remote_file_helper.hpp"
 #include "table_function_common.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -359,6 +360,60 @@ TableFunction ReadFastxTableFunction::GetFunction() {
 }
 
 void ReadFastxTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Read FASTA / FASTQ files. Format auto-detected from extension
+(`.fasta`/`.fa`/`.fna` → FASTA; `.fastq`/`.fq` → FASTQ). Gzip files
+(`.gz`) are auto-detected. Single-file `-` / `/dev/stdin` supported (not
+in arrays, not paired-end).
+
+`filename` accepts a single path, a glob (`'samples/*.fq'`), an array of
+literal paths, or stdin. Multi-file reads parallelize across 8 threads;
+stdin is single-threaded.
+
+For paired-end FASTQ, pass R2 via `sequence2`. R1 and R2 lists must
+contain the same number of files; reads are paired by **position in the
+file**, not by read ID (no validation).
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `sequence2` | VARCHAR or VARCHAR[] | _none_ | R2 file(s) for paired-end. Globs allowed if `filename` is also a glob; both expand independently and pair by sorted position. |
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column. Recommended for multi-file reads since `sequence_index` resets per file. |
+| `qual_offset` | INTEGER | `33` | Quality-score Phred offset. Use `64` for old Illumina data. |
+| `max_batch_bytes` | VARCHAR | (auto) | Tuning knob for batch size. Accepts `'128MB'`, `'1GB'`, etc. |
+
+### Output schema
+
+`sequence_index` (BIGINT, 1-based, **resets per file**), `read_id`
+(VARCHAR, no `@`/`>` prefix), `comment` (VARCHAR, nullable), `sequence1`
+(VARCHAR), `sequence2` (VARCHAR, nullable), `qual1` (UINT8[], nullable
+— always NULL for FASTA), `qual2` (UINT8[], nullable), `filepath`
+(VARCHAR, opt-in).
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"filename"},
+	    {
+	        "SELECT * FROM read_fastx('reads.fastq') LIMIT 5;",
+	        "-- Gzip-compressed input\n"
+	        "SELECT * FROM read_fastx('reads.fastq.gz');",
+	        "-- Paired-end\n"
+	        "SELECT * FROM read_fastx('R1.fq', sequence2='R2.fq');",
+	        "-- Paired-end with globs (counts must match after expansion)\n"
+	        "SELECT * FROM read_fastx('samples/*_R1.fastq', sequence2='samples/*_R2.fastq');",
+	        "-- Multi-file with filepath tagging — order by filepath, sequence_index\n"
+	        "SELECT * FROM read_fastx(['batch1.fq', 'batch2.fq'], include_filepath=true)\n"
+	        "ORDER BY filepath, sequence_index;",
+	        "-- Old Illumina Phred+64\n"
+	        "SELECT * FROM read_fastx('old_illumina.fastq', qual_offset=64);",
+	        "-- Length filter\n"
+	        "SELECT read_id, LENGTH(sequence1) AS len FROM read_fastx('reads.fq')\n"
+	        "WHERE LENGTH(sequence1) BETWEEN 100 AND 150;",
+	        "-- Per-read average quality\n"
+	        "SELECT read_id, CAST(AVG(q) AS INTEGER) AS avg_qual\n"
+	        "FROM (SELECT read_id, UNNEST(qual1) AS q FROM read_fastx('reads.fq'))\n"
+	        "GROUP BY read_id HAVING AVG(q) >= 30;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"sequence-io"});
 }
 }; // namespace duckdb

@@ -1,4 +1,5 @@
 #include "MzMLReader.hpp"
+#include "documented_function.hpp"
 #include "remote_file_helper.hpp"
 #include "table_function_common.hpp"
 #include "duckdb/common/types.hpp"
@@ -117,6 +118,50 @@ TableFunction ReadMzMLTableFunction::GetFunction() {
 }
 
 void ReadMzMLTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Read mzML mass-spectrometry files into a relation with one row per
+spectrum (27 columns: identifiers, MS-level metadata, precursor info,
+peak arrays). Schema is `UNION ALL`-compatible with
+[`read_mzxml`](../read_mzxml/) so mzML and mzXML can be combined.
+
+Stdin not supported (mzML requires file seeking). Supports zlib-
+compressed and uncompressed binary arrays at 32- or 64-bit precision.
+For chromatograms (TIC/BPC/SRM/SIC) use
+[`read_mzml_chromatograms`](../read_mzml_chromatograms/).
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column. |
+
+### Output schema (27 columns)
+
+`spectrum_index`, `spectrum_id`, `scan_number`, `ms_level`,
+`retention_time`, `spectrum_type`, `polarity`, `base_peak_mz`,
+`base_peak_intensity`, `total_ion_current`, `lowest_mz`, `highest_mz`,
+`default_array_length`, `precursor_mz`, `precursor_charge`,
+`precursor_intensity`, `isolation_window_target`,
+`isolation_window_lower`, `isolation_window_upper`, `activation_method`,
+`collision_energy`, `mz_array` (DOUBLE[]), `intensity_array` (DOUBLE[]),
+`filter_string`, `scan_window_lower`, `scan_window_upper`,
+`ms1_scan_index`.
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"filename"},
+	    {
+	        "-- Spectrum counts by MS level\n"
+	        "SELECT ms_level, COUNT(*) FROM read_mzml('sample.mzML') GROUP BY ms_level;",
+	        "-- MS2 spectra with precursor info\n"
+	        "SELECT scan_number, precursor_mz, precursor_charge, activation_method\n"
+	        "FROM read_mzml('sample.mzML') WHERE ms_level = 2;",
+	        "-- Per-peak unnest for peak-level analysis\n"
+	        "SELECT spectrum_index, ms_level,\n"
+	        "       UNNEST(mz_array) AS mz, UNNEST(intensity_array) AS intensity\n"
+	        "FROM read_mzml('sample.mzML');",
+	        "-- Multi-file glob with filepath\n"
+	        "SELECT * FROM read_mzml('data/mzml/*.mzML', include_filepath=true);",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"mzml-io"});
 }
 } // namespace duckdb

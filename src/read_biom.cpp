@@ -1,5 +1,6 @@
 #include "read_biom.hpp"
 #include "BIOMReader.hpp"
+#include "documented_function.hpp"
 #include "remote_file_helper.hpp"
 #include "table_function_common.hpp"
 #include "duckdb.h"
@@ -171,6 +172,42 @@ TableFunction ReadBIOMTableFunction::GetFunction() {
 }
 
 void ReadBIOMTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Read [BIOM](http://biom-format.org/) (Biological Observation Matrix)
+v2.1 files (HDF5-based). Returns sparse COO rows: one entry per
+non-zero `(sample_id, feature_id, value)`. Zero values are not emitted.
+
+Glob patterns and arrays of paths are supported; multiple files are
+concatenated. Reads are parallelized for large tables.
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column to the output. |
+
+### Output schema
+
+`sample_id` (VARCHAR), `feature_id` (VARCHAR — OGU/OTU/ASV id),
+`value` (DOUBLE), `filepath` (VARCHAR, opt-in).
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"filename"},
+	    {
+	        "SELECT * FROM read_biom('ogu_table.biom') LIMIT 5;",
+	        "-- Per-sample total counts\n"
+	        "SELECT sample_id, SUM(value) AS total_count\n"
+	        "FROM read_biom('ogu_table.biom')\n"
+	        "GROUP BY sample_id ORDER BY total_count DESC;",
+	        "-- Top-10 most abundant features\n"
+	        "SELECT feature_id, SUM(value) AS total_abundance\n"
+	        "FROM read_biom('ogu_table.biom')\n"
+	        "GROUP BY feature_id ORDER BY total_abundance DESC LIMIT 10;",
+	        "-- Multi-file glob with filepath tagging\n"
+	        "SELECT filepath, COUNT(DISTINCT sample_id) AS n_samples\n"
+	        "FROM read_biom('batches/*.biom', include_filepath=true)\n"
+	        "GROUP BY filepath;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"microbiome"});
 }
 }; // namespace duckdb

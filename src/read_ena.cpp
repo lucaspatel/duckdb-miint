@@ -1,5 +1,7 @@
 #include "read_ena.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <algorithm>
 
 namespace duckdb {
@@ -273,7 +275,48 @@ TableFunction ReadENATableFunction::GetFunction() {
 }
 
 void ReadENATableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Query metadata from the EBI European Nucleotide Archive (ENA) Portal
+API. Returns run, sample, or study metadata as a relation of VARCHAR
+columns named per the requested `fields`.
+
+Accession type is auto-detected from prefix and mapped to the right
+query parameter. **Cross-type resolution** is automatic: passing a run
+accession with `result='study'` first resolves to the parent study
+accession, then queries the study endpoint.
+
+Requires `httpfs` and network access to `www.ebi.ac.uk`. Rate-limited
+to ~3 req/s with retry on 429/5xx.
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `result` | VARCHAR | `'read_run'` | ENA result type. One of `'read_run'`, `'sample'`, `'study'`. |
+| `fields` | VARCHAR | (sensible defaults per result type) | Comma-separated list of ENA field names to return. See [`ena_searchable_fields`](../ena_searchable_fields/) for what's available. |
+
+### Output schema
+
+All columns are VARCHAR named according to the requested fields.
+Default `read_run` fields include `run_accession`, `experiment_accession`,
+`sample_accession`, `study_accession`, `fastq_ftp`, `fastq_bytes`,
+`fastq_md5`, `library_strategy`, `library_layout`, `instrument_model`,
+`read_count`, `base_count`, etc. Defaults differ for `sample` and
+`study` result types.
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"accession"},
+	    {
+	        "SELECT * FROM read_ena('ERR1074767');",
+	        "-- Just the fields you need\n"
+	        "SELECT run_accession, library_layout, read_count\n"
+	        "FROM read_ena('ERR1074767', fields='run_accession,library_layout,read_count');",
+	        "-- Auto cross-type resolution: run -> sample\n"
+	        "SELECT * FROM read_ena('ERR1074767', result='sample');",
+	        "-- All runs in a BioProject\n"
+	        "CREATE TABLE project_runs AS SELECT * FROM read_ena('PRJNA555783');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"ena-io"});
 }
 
 } // namespace duckdb

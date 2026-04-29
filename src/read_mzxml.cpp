@@ -1,4 +1,5 @@
 #include "MzXMLReader.hpp"
+#include "documented_function.hpp"
 #include "remote_file_helper.hpp"
 #include "table_function_common.hpp"
 #include "duckdb/common/types.hpp"
@@ -115,6 +116,31 @@ TableFunction ReadMzXMLTableFunction::GetFunction() {
 }
 
 void ReadMzXMLTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Read mzXML mass-spectrometry files. Schema is **identical** to
+[`read_mzml`](../read_mzml/) — same 27 columns — so the two readers
+combine cleanly via `UNION ALL`.
+
+Handles big-endian interleaved binary data (mzXML spec), nested
+`<scan>` elements (children emitted before parents), and
+zlib-compressed 32/64-bit precision arrays. `scan_number` is always
+populated from the `<scan num>` attribute.
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column. |
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"filename"},
+	    {
+	        "SELECT * FROM read_mzxml('sample.mzXML') LIMIT 5;",
+	        "-- Combine mzML and mzXML in one pipeline (schemas match)\n"
+	        "SELECT * FROM read_mzml('batch1.mzML')\n"
+	        "UNION ALL\n"
+	        "SELECT * FROM read_mzxml('batch2.mzXML');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"mzml-io"});
 }
 } // namespace duckdb

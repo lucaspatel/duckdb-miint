@@ -1,8 +1,10 @@
 #include "read_ena_sequences.hpp"
 #include "SequenceRecord.hpp"
+#include "documented_function.hpp"
 #include "ena_resolver_cache.hpp"
 #include "miint_log.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <cerrno>
 #include <fstream>
 
@@ -774,7 +776,58 @@ TableFunction ReadENASequencesTableFunction::GetFunction() {
 }
 
 void ReadENASequencesTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Stream FASTA/FASTQ/SFF sequence data from EBI/ENA. Schema is
+`read_fastx`-compatible plus run/sample/experiment-accession columns —
+sequence rows are directly joinable with project metadata. Unlike
+`read_fastx`, mixed FASTA/FASTQ paired-end is supported.
+
+Accepts study (bulk-download all runs), sample, run, or experiment
+accessions. Requires `httpfs` and network access to
+`ftp.sra.ebi.ac.uk`.
+
+### Lateral / correlated invocation
+
+Because this function supports `LATERAL` invocation, named parameters
+must use **arrow syntax** (`name => value`), not `name = value`:
+
+```sql
+read_ena_sequences('ERR1074767', prefer_format => 'sff', trim_sff => false)
+```
+
+### Named parameters
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `include_filepath` | BOOLEAN | `false` | Add a `filepath` column (semicolon-separated for paired-end). |
+| `qual_offset` | BIGINT | `33` | Phred offset (33 for Sanger, 64 for old Illumina). |
+| `download_method` | VARCHAR | _auto_ | Override the FTP/HTTPS/Aspera download path. |
+| `prefer_format` | VARCHAR | _auto_ | Force `'fastq'` or `'sff'` when both formats are available for the run. |
+| `trim_sff` | BOOLEAN | `true` | For SFF runs, apply quality+adapter clip positions from the SFF header. Ignored for FASTQ. Named `trim_sff` because `TRIM` is a SQL keyword that DuckDB's binder rejects in named-arg position for dual-path functions. |
+| `max_sequences` | BIGINT | `0` (unlimited) | Per-run cap on emitted rows. For paired-end runs the cap counts pairs (each output row = 2 reads downloaded). When using Aspera the cap tears down `ascp` early to save bandwidth. SFF runs ignore the cap mid-download and warn loudly. |
+
+### Output schema
+
+`read_fastx` columns (`sequence_index`, `read_id`, `comment`,
+`sequence1`, `sequence2`, `qual1`, `qual2`) plus run/sample/experiment
+accession columns and an opt-in `filepath`.
+)DOC";
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"accession"},
+	    {
+	        "-- Stream a single run's reads (FASTQ auto-detected)\n"
+	        "SELECT sequence_index, read_id, sequence1\n"
+	        "FROM read_ena_sequences('ERR1074767') LIMIT 5;",
+	        "-- Bulk-download all runs of a study, capping each at 1k reads\n"
+	        "SELECT run_accession, COUNT(*) AS n\n"
+	        "FROM read_ena_sequences('PRJEB11419', max_sequences => 1000)\n"
+	        "GROUP BY run_accession;",
+	        "-- LATERAL: stream untrimmed SFF for each run accession in a metadata table\n"
+	        "SELECT m.run_accession, s.read_id, LENGTH(s.sequence1) AS len\n"
+	        "FROM ena_metadata m,\n"
+	        "     read_ena_sequences(m.run_accession, prefer_format => 'sff', trim_sff => false) s;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"ena-io"});
 }
 
 } // namespace duckdb
