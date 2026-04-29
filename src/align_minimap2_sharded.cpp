@@ -1,7 +1,9 @@
 #include "align_minimap2_sharded.hpp"
 #include "align_common.hpp"
+#include "documented_function.hpp"
 #include "shard_debug.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
 
@@ -496,7 +498,65 @@ TableFunction AlignMinimap2ShardedTableFunction::GetFunction() {
 }
 
 void AlignMinimap2ShardedTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Align query sequences in parallel against multiple pre-built minimap2
+index shards. The companion to
+[`align_minimap2`](../align_minimap2/) for sharded reference
+databases: each shard is a separate `.mmi` file under
+`shard_directory/`, and a per-read mapping table routes each read to
+the shard(s) it should be aligned against.
+
+Designed for large-scale metagenomic workflows where a prior
+classification step has already assigned reads to shards (e.g., RYpe
+output). Emits the same 21-column SAM schema as
+[`read_alignments`](../read_alignments/).
+
+### Required named parameters
+
+- `shard_directory` (VARCHAR) — directory containing one
+  `<shard_name>.mmi` file per shard.
+- `read_to_shard` (VARCHAR) — table/view with `(read_id VARCHAR,
+  shard_name VARCHAR)`. A read may appear in multiple shards.
+
+### Optional named parameters
+
+- `preset` (VARCHAR, default `'sr'`) — minimap2 preset.
+- `max_secondary` (INTEGER, default `5`) — secondary alignments per
+  query.
+- `eqx` (BOOLEAN, default `true`) — use `=`/`X` CIGAR ops.
+- `min_chain_coverage` (FLOAT) — minimum query coverage to emit.
+- `include_shard_name` (BOOLEAN, default `false`) — when `true`,
+  prepend a `shard_name` column to the output.
+
+Parallelism is one DuckDB thread per shard (control with
+`SET threads=N`); shards are sorted largest-first for load balancing.
+Unmapped reads (flag `0x4`) are dropped.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"query_table"},
+	    {
+	        "-- Pre-build per-shard indexes (one-time setup)\n"
+	        "SELECT * FROM save_minimap2_index('shard_a_refs', 'indexes/shard_a.mmi');\n"
+	        "SELECT * FROM save_minimap2_index('shard_b_refs', 'indexes/shard_b.mmi');",
+	        "-- Map each read to its shard, then align in parallel\n"
+	        "CREATE TABLE queries AS SELECT * FROM read_fastx('reads.fastq');\n"
+	        "CREATE TABLE rts AS VALUES ('r1','shard_a'), ('r2','shard_b'), ('r3','shard_a');\n"
+	        "SELECT * FROM align_minimap2_sharded('queries',\n"
+	        "    shard_directory := 'indexes/', read_to_shard := 'rts',\n"
+	        "    max_secondary := 0);",
+	        "-- Filter the sharded output by mapping quality\n"
+	        "SELECT read_id, reference, position, mapq\n"
+	        "FROM align_minimap2_sharded('queries',\n"
+	        "    shard_directory := 'indexes/', read_to_shard := 'rts',\n"
+	        "    max_secondary := 0)\n"
+	        "WHERE mapq >= 30;",
+	        "-- Long-read shards via the Nanopore preset\n"
+	        "SELECT * FROM align_minimap2_sharded('nanopore_reads',\n"
+	        "    shard_directory := 'indexes/', read_to_shard := 'rts',\n"
+	        "    preset := 'map-ont', max_secondary := 0);",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-tools"});
 }
 
 } // namespace duckdb

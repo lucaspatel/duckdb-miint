@@ -1,8 +1,10 @@
 #include "align_bowtie2_sharded.hpp"
 #include "align_common.hpp"
+#include "documented_function.hpp"
 #include "miint_log.hpp"
 #include "shard_debug.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
 
@@ -502,7 +504,71 @@ TableFunction AlignBowtie2ShardedTableFunction::GetFunction() {
 }
 
 void AlignBowtie2ShardedTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Align query sequences in parallel against multiple pre-built Bowtie2
+index shards. The Bowtie2 counterpart to
+[`align_minimap2_sharded`](../align_minimap2_sharded/) for the same
+sharded large-scale workflows. Each shard is a Bowtie2 index under
+`<shard_directory>/<shard_name>/index.*`, and a per-read mapping
+table routes each read to the shard(s) it should be aligned against.
+
+Emits the same 21-column SAM schema as
+[`read_alignments`](../read_alignments/).
+
+### Requirements
+
+- The `bowtie2` binary must be on `$PATH`. Check with
+  [`bowtie2_available()`](../bowtie2_available/).
+
+### Required named parameters
+
+- `shard_directory` (VARCHAR) — directory containing one
+  `<shard_name>/index.*` Bowtie2 index per shard.
+- `read_to_shard` (VARCHAR) — table/view with `(read_id VARCHAR,
+  shard_name VARCHAR)`. A read may appear in multiple shards.
+
+### Optional named parameters
+
+- `preset` (VARCHAR) — `'very-fast'`, `'fast'`, `'sensitive'`,
+  `'very-sensitive'`.
+- `local` (BOOLEAN, default `false`) — local alignment instead of
+  end-to-end.
+- `max_secondary` (INTEGER, default `1`) — Bowtie2's `-k` value.
+- `extra_args` (VARCHAR) — extra Bowtie2 CLI flags.
+- `quiet` (BOOLEAN, default `true`) — suppress Bowtie2 stderr.
+- `include_shard_name` (BOOLEAN, default `false`) — when `true`,
+  prepend a `shard_name` column to the output.
+- `threads` (INTEGER) — ignored; each shard runs single-threaded to
+  avoid CPU oversubscription. A warning prints if set to a value
+  other than `1`.
+
+Parallelism is one DuckDB thread per shard (control with
+`SET threads=N`); shards are sorted largest-first for load balancing.
+Unmapped reads (flag `0x4`) are dropped.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"query_table"},
+	    {
+	        "-- Map each read to its Bowtie2 shard, then align in parallel\n"
+	        "CREATE TABLE queries AS SELECT * FROM read_fastx('reads.fastq');\n"
+	        "CREATE TABLE rts AS VALUES ('r1','shard_a'), ('r2','shard_b'), ('r3','shard_a');\n"
+	        "SELECT * FROM align_bowtie2_sharded('queries',\n"
+	        "    shard_directory := 'indexes/', read_to_shard := 'rts',\n"
+	        "    max_secondary := 0);",
+	        "-- Most-sensitive preset with local alignment, MQ-filtered\n"
+	        "SELECT read_id, reference, position, mapq\n"
+	        "FROM align_bowtie2_sharded('queries',\n"
+	        "    shard_directory := 'indexes/', read_to_shard := 'rts',\n"
+	        "    preset := 'very-sensitive', local := true,\n"
+	        "    max_secondary := 0)\n"
+	        "WHERE mapq >= 30;",
+	        "-- Pass extra Bowtie2 flags through\n"
+	        "SELECT * FROM align_bowtie2_sharded('queries',\n"
+	        "    shard_directory := 'indexes/', read_to_shard := 'rts',\n"
+	        "    extra_args := '--no-unal --rdg 5,3');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-tools"});
 }
 
 } // namespace duckdb

@@ -1,5 +1,6 @@
 #include "align_mafft.hpp"
 #include "MafftAligner.hpp"
+#include "documented_function.hpp"
 #include "per_sample_table_function.hpp"
 #include "sequence_table_reader.hpp"
 #include "duckdb/common/exception.hpp"
@@ -7,6 +8,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <unordered_set>
 
 namespace duckdb {
@@ -246,7 +248,74 @@ TableFunction AlignMafftTableFunction::GetFunction() {
 }
 
 void AlignMafftTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Multiple sequence alignment using
+[MAFFT](https://mafft.cbrc.jp/alignment/software/)'s PartTree
+algorithm. Reads sequences from a DuckDB table/view and emits aligned
+sequences with `-` gap characters inserted, suitable for downstream
+phylogeny or pairwise-identity work.
+
+MAFFT is embedded as a statically linked C library — no external
+binary is required. PartTree builds an O(N log N) guide tree using
+k-tuple distances, scaling well to 5,000+ sequences.
+
+### Output schema
+
+| Column | Type | |
+|---|---|---|
+| `sequence_index` | BIGINT | 0-based position in input order |
+| `read_id` | VARCHAR | input identifier |
+| `aligned_sequence` | VARCHAR | aligned sequence with `-` gap chars |
+| `original_length` | INTEGER | length of input sequence |
+| `aligned_length` | INTEGER | length after alignment (same for all rows in a sample) |
+
+The input table must have `read_id` and `sequence1` columns and at
+least 2 rows (≥6 chars each). Paired-end tables (`sequence2` present)
+are rejected at bind. DNA vs protein is auto-detected.
+
+### Named parameters
+
+- `sample_id` (VARCHAR) — column to partition by. When set, runs one
+  MSA per distinct sample value and prepends the sample column to the
+  output. Per-sample validation: each sample must have ≥2 sequences
+  of ≥6 chars; the whole query aborts if any sample violates.
+  `sequence_index` is per-sample (0..n-1 within each sample).
+
+Equivalent to `mafft --quiet --preservecase --parttree`. Original case
+is preserved (MAFFT internally lowercases DNA; the wrapper restores
+the original characters).
+
+### Thread safety
+
+A process-wide mutex serializes alignments. Concurrent calls are safe
+but will run one at a time.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"table_name"},
+	    {
+	        "-- Basic MSA from a sequence table\n"
+	        "CREATE TABLE seqs AS SELECT read_id, sequence1 FROM read_fastx('sequences.fasta');\n"
+	        "SELECT * FROM align_mafft('seqs');",
+	        "-- Inspect gap insertion per sequence\n"
+	        "SELECT read_id, original_length, aligned_length,\n"
+	        "       aligned_length - original_length AS gaps_inserted\n"
+	        "FROM align_mafft('seqs')\n"
+	        "ORDER BY gaps_inserted DESC;",
+	        "-- Filter input before alignment, no temp files\n"
+	        "CREATE TABLE filtered AS\n"
+	        "  SELECT read_id, sequence1 FROM read_fastx('large_dataset.fasta')\n"
+	        "  WHERE length(sequence1) >= 100;\n"
+	        "SELECT * FROM align_mafft('filtered');",
+	        "-- Per-sample MSA: one alignment per sample value\n"
+	        "CREATE VIEW cohort AS\n"
+	        "  SELECT 'S1' AS sample, * FROM read_fastx('sample1.fasta')\n"
+	        "  UNION ALL\n"
+	        "  SELECT 'S2' AS sample, * FROM read_fastx('sample2.fasta');\n"
+	        "SELECT * FROM align_mafft('cohort', sample_id := 'sample')\n"
+	        "ORDER BY sample, sequence_index;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-tools"});
 }
 
 } // namespace duckdb

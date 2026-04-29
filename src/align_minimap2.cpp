@@ -1,8 +1,10 @@
 #include "align_minimap2.hpp"
 #include "align_common.hpp"
+#include "documented_function.hpp"
 #include "shard_debug.hpp"
 #include "duckdb/common/printer.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
 namespace duckdb {
@@ -305,7 +307,73 @@ TableFunction AlignMinimap2TableFunction::GetFunction() {
 }
 
 void AlignMinimap2TableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Align query sequences to subject sequences using
+[minimap2](https://github.com/lh3/minimap2). Reads sequences from
+DuckDB tables/views and emits alignments in the same 21-column SAM
+schema as [`read_alignments`](../read_alignments/), so results compose
+freely with `read_alignments` output via `UNION ALL`.
+
+For large reference databases (e.g., a human genome), build the index
+once with [`save_minimap2_index`](../save_minimap2_index/) and pass it
+via `index_path=` for 10–30× faster alignment than rebuilding on every
+call.
+
+### Named parameters
+
+- `subject_table` (VARCHAR) — table/view of reference sequences,
+  `read_fastx`-compatible. Mutually exclusive with `index_path`.
+- `index_path` (VARCHAR) — path to a pre-built `.mmi` index. Mutually
+  exclusive with `subject_table`. When set, `k`/`w` are ignored
+  (baked into the index).
+- `per_subject_database` (BOOLEAN, default `false`) — build a separate
+  index per subject and align all queries against each. Only valid
+  with `subject_table`.
+- `preset` (VARCHAR, default `'sr'`) — minimap2 preset: `'sr'`
+  (Illumina), `'map-ont'` (Nanopore), `'map-pb'` (PacBio), etc.
+- `max_secondary` (INTEGER, default `5`) — secondary alignments per
+  query. Set to `0` for primary only.
+- `k`, `w` (INTEGER) — k-mer size and minimizer window size override.
+- `eqx` (BOOLEAN, default `true`) — use `=`/`X` CIGAR ops instead of `M`.
+- `min_chain_coverage` (FLOAT) — minimum fraction of the query covered
+  by the chain to emit an alignment.
+
+Subject sequences are loaded into memory at bind time (must fit in
+RAM); query sequences are streamed in batches of 1024.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"query_table"},
+	    {
+	        "-- Build subject and query tables, then align with on-the-fly index\n"
+	        "CREATE TABLE subjects AS SELECT * FROM read_fastx('references.fasta');\n"
+	        "CREATE TABLE queries AS SELECT * FROM read_fastx('reads.fastq');\n"
+	        "SELECT * FROM align_minimap2('queries', subject_table='subjects');",
+	        "-- Primary alignments only, sorted by read\n"
+	        "SELECT read_id, reference, position, mapq, cigar\n"
+	        "FROM align_minimap2('queries', subject_table='subjects', max_secondary=0)\n"
+	        "ORDER BY read_id;",
+	        "-- Pre-built index for repeated alignment against the same reference\n"
+	        "SELECT * FROM save_minimap2_index('subjects', 'references.mmi', preset='sr');\n"
+	        "SELECT * FROM align_minimap2('queries', index_path='references.mmi', max_secondary=0);",
+	        "-- Long-read preset for Oxford Nanopore data\n"
+	        "SELECT * FROM align_minimap2('queries', subject_table='subjects', preset='map-ont');",
+	        "-- Filter on mapping quality and identity in one query\n"
+	        "SELECT read_id, reference, position,\n"
+	        "       alignment_seq_identity(cigar, tag_nm, tag_md) AS identity\n"
+	        "FROM align_minimap2('queries', subject_table='subjects', max_secondary=0)\n"
+	        "WHERE mapq >= 30\n"
+	        "  AND alignment_seq_identity(cigar, tag_nm, tag_md) > 0.95;",
+	        "-- Per-subject mode: align all queries against each subject separately\n"
+	        "SELECT reference, COUNT(*) AS aligned_reads\n"
+	        "FROM align_minimap2('queries', subject_table='subjects',\n"
+	        "                    per_subject_database=true, max_secondary=0)\n"
+	        "GROUP BY reference;",
+	        "-- Paired-end alignment (table built from R1/R2 fastq)\n"
+	        "CREATE TABLE paired AS SELECT * FROM read_fastx('R1.fastq', sequence2='R2.fastq');\n"
+	        "SELECT * FROM align_minimap2('paired', subject_table='subjects', max_secondary=0);",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-tools"});
 }
 
 } // namespace duckdb

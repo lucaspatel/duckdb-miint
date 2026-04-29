@@ -1,4 +1,5 @@
 #include "save_minimap2_index.hpp"
+#include "documented_function.hpp"
 #include "sequence_table_reader.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -125,7 +126,45 @@ TableFunction SaveMinimap2IndexTableFunction::GetFunction() {
 }
 
 void SaveMinimap2IndexTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Build a minimap2 index from a DuckDB table/view of reference sequences
+and write it to disk as a `.mmi` file. Pair with
+[`align_minimap2(..., index_path='file.mmi')`](../align_minimap2/) to
+amortize indexing across many alignment runs (10–30× faster than
+rebuilding from FASTA each time).
+
+Returns one row: `(success BOOLEAN, index_path VARCHAR, num_subjects BIGINT)`.
+
+### Named parameters
+
+- `preset` (VARCHAR, default `'sr'`) — minimap2 preset; same options
+  as `align_minimap2`.
+- `k` (INTEGER) — k-mer size override.
+- `w` (INTEGER) — minimizer window size override.
+- `eqx` (BOOLEAN, default `true`) — use `=`/`X` CIGAR ops instead of `M`.
+
+The subject table must have a `read_fastx`-compatible schema
+(`read_id`, `sequence1`) and cannot contain paired-end data.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"subject_table", "output_path"},
+	    {
+	        "-- Build a short-read index from a reference FASTA, then reuse it\n"
+	        "CREATE TABLE refs AS SELECT * FROM read_fastx('WoLr2_db.fna');\n"
+	        "SELECT * FROM save_minimap2_index('refs', 'wolr2.mmi');",
+	        "-- Build separate indexes for short-read vs long-read presets\n"
+	        "SELECT * FROM save_minimap2_index('refs', 'wolr2_sr.mmi', preset='sr');\n"
+	        "SELECT * FROM save_minimap2_index('refs', 'wolr2_ont.mmi', preset='map-ont');",
+	        "-- Inspect the result row\n"
+	        "SELECT success, index_path, num_subjects\n"
+	        "FROM save_minimap2_index('refs', 'my_index.mmi', preset='sr');",
+	        "-- Build, then align using the saved index (10-30x faster for large refs)\n"
+	        "CREATE TABLE reads AS SELECT * FROM read_fastx('metagenome.fastq');\n"
+	        "SELECT * FROM save_minimap2_index('refs', 'wolr2.mmi');\n"
+	        "SELECT * FROM align_minimap2('reads', index_path='wolr2.mmi', max_secondary=0);",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-tools"});
 }
 
 } // namespace duckdb

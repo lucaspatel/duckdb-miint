@@ -1,8 +1,10 @@
 #include "align_sortmerna_rrna.hpp"
 
 #include "align_sortmerna_common.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
 namespace duckdb {
@@ -119,7 +121,53 @@ TableFunction AlignSortMeRNARRNATableFunction::GetFunction() {
 }
 
 void AlignSortMeRNARRNATableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Same aligner as [`align_sortmerna`](../align_sortmerna/) but emits
+SortMeRNA's native output schema, which preserves identity / coverage
+/ e-value / edit-distance as first-class columns (SAM cannot carry
+all of these).
+
+Use this when you need the per-hit identity / coverage / e-value
+fields directly. Use `align_sortmerna` instead when you want SAM
+schema compatibility with the other aligners.
+
+Named parameters are identical to `align_sortmerna`. Same caveats
+apply (no minimum-score filter, e-value differs from CLI, process-wide
+serialization).
+
+### Output schema
+
+| Column | Type | |
+|---|---|---|
+| `read_id` | VARCHAR | Query read identifier |
+| `aligned` | INTEGER | `1` if the read aligned, `0` otherwise |
+| `strand` | INTEGER | `1` forward, `0` reverse-complement (no meaning when unaligned) |
+| `ref_name` | VARCHAR | Reference identifier (empty when unaligned) |
+| `ref_start` | INTEGER | 1-based inclusive start (`0` when unaligned) |
+| `ref_end` | INTEGER | 1-based inclusive end (`0` when unaligned) |
+| `cigar` | VARCHAR | CIGAR string, SSW convention (uses `M/I/D/S`) |
+| `score` | INTEGER | Raw Smith-Waterman score |
+| `e_value` | DOUBLE | Per-query Karlin-Altschul e-value |
+| `identity` | DOUBLE | Percent identity (0..100) at full precision |
+| `coverage` | DOUBLE | Query coverage (0..100) at full precision |
+| `edit_distance` | INTEGER | Mismatches + indels |
+| `segment_idx` | INTEGER | `0` for single-end / forward mate; `1` for reverse mate |
+
+Paired-end mode produces two rows per input row with `segment_idx` 0
+and 1, even when one or both mates failed to align.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"query_table"},
+	    {
+	        "-- Aggregate hits per Greengenes reference, filtered by e-value and coverage\n"
+	        "SELECT ref_name, COUNT(*) AS hits\n"
+	        "FROM align_sortmerna_rrna('reads',\n"
+	        "       ref_paths := ['gg_13_8.fasta'])\n"
+	        "WHERE aligned = 1 AND e_value <= 1e-5 AND coverage >= 80.0\n"
+	        "GROUP BY ref_name ORDER BY hits DESC;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-tools"});
 }
 
 } // namespace duckdb

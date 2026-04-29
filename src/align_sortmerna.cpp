@@ -1,9 +1,11 @@
 #include "align_sortmerna.hpp"
 
 #include "align_sortmerna_common.hpp"
+#include "documented_function.hpp"
 #include "sortmerna_result_utils.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
 namespace duckdb {
@@ -110,7 +112,77 @@ TableFunction AlignSortMeRNATableFunction::GetFunction() {
 }
 
 void AlignSortMeRNATableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+rRNA filtering / alignment against one or more rRNA reference
+databases using [SortMeRNA](https://github.com/biocore/sortmerna)
+(Kopylova et al. 2012, *Bioinformatics* 28:3211-3217), embedded as a
+statically linked library (SortMeRNA 4.4.0 fork; LGPL-3.0-or-later).
+
+Emits the standard 21-column SAM schema shared with
+[`align_minimap2`](../align_minimap2/) /
+[`align_bowtie2`](../align_bowtie2/), so results compose freely with
+[`read_alignments`](../read_alignments/) output. For SortMeRNA's
+native identity / coverage / e-value / edit-distance schema, use
+[`align_sortmerna_rrna`](../align_sortmerna_rrna/).
+
+### Required named parameters
+
+- `ref_paths` (VARCHAR[]) — list of FASTA paths for the rRNA reference
+  database(s). Index is built once per query in-memory (rebuilt every
+  call — no on-disk index format).
+
+### Optional named parameters
+
+- `num_threads` (INTEGER, default = DuckDB's thread count) — internal
+  SortMeRNA thread pool size. The DuckDB function itself runs on a
+  single thread.
+- `match`, `mismatch`, `gap_open`, `gap_ext`, `score_N` (INTEGER) —
+  Smith-Waterman scoring. Defaults `2 / -3 / 5 / 2 / 0`.
+- `evalue` (DOUBLE, default `1.0`) — e-value threshold.
+- `seed_win_len` (UINTEGER, default `18`) — seed window length.
+- `num_alignments` (UINTEGER, default `1`) — max alignments per read.
+- `best` (BOOLEAN, default `true`) — keep only best-scoring hit per
+  read.
+- `paired` (BOOLEAN, default `false`) — paired-end mode. Requires a
+  `sequence2` column on `query_table`.
+- `forward_only`, `reverse_only`, `full_search` (BOOLEAN) —
+  strand-search controls.
+
+### SortMeRNA-specific output notes
+
+- `mapq` is always `255` (SortMeRNA does not compute mapping quality;
+  255 is the SAM convention for "unavailable").
+- `tag_as` carries the raw Smith-Waterman score; `tag_nm` carries
+  edit distance. Both NULL for unaligned rows.
+- `tag_xs`, `tag_ys`, `tag_xn`, `tag_xm`, `tag_xo`, `tag_xg`,
+  `tag_yt`, `tag_md`, `tag_sa` are always NULL.
+
+### Caveats
+
+- **No minimum-score filter**: the embedded library returns every
+  positive Smith-Waterman hit. The `sortmerna` CLI applies an internal
+  threshold that this streaming API path bypasses. Filter on `tag_as`
+  (score) or `e_value` in SQL to reproduce CLI output.
+- **E-values diverge from the CLI**: per-query Karlin-Altschul here vs
+  database-summed in the CLI. Identity / coverage / score / CIGAR /
+  positions / edit distance are bit-identical.
+- **Process-wide serialization**: SortMeRNA's `g_run_mutex` serializes
+  all calls process-wide. Concurrent `align_sortmerna` /
+  `align_sortmerna_rrna` queries block on each other.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"query_table"},
+	    {
+	        "-- Filter reads to those that align to any SILVA reference\n"
+	        "CREATE TABLE reads AS SELECT read_id, sequence1 FROM read_fastx('metaT.fastq.gz');\n"
+	        "CREATE TABLE rrna_reads AS\n"
+	        "  SELECT read_id, flags, reference, position, cigar, tag_as AS score\n"
+	        "  FROM align_sortmerna('reads',\n"
+	        "         ref_paths := ['silva-bac-16s.fasta', 'silva-arc-16s.fasta'])\n"
+	        "  WHERE (flags & 0x4) = 0;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-tools"});
 }
 
 } // namespace duckdb

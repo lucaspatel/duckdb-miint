@@ -1,6 +1,8 @@
 #include "align_bowtie2.hpp"
 #include "align_result_utils.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include <fcntl.h>
 #include <mutex>
@@ -198,7 +200,59 @@ TableFunction AlignBowtie2TableFunction::GetFunction() {
 }
 
 void AlignBowtie2TableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Align query sequences against subject sequences using
+[Bowtie2](https://bowtie-bio.sourceforge.net/bowtie2/), invoked as a
+subprocess. Reads sequences from DuckDB tables/views and emits the
+same 21-column SAM schema as
+[`read_alignments`](../read_alignments/), so results compose freely
+with `read_alignments` output via `UNION ALL`.
+
+Bowtie2 is optimized for short reads (≲500 bp); for long reads use
+[`align_minimap2`](../align_minimap2/) instead.
+
+### Requirements
+
+- The `bowtie2` and `bowtie2-build` binaries must be on `$PATH`. Check
+  with the [`bowtie2_available()`](../bowtie2_available/) scalar.
+
+### Named parameters
+
+- `preset` (VARCHAR) — sensitivity preset: `'very-fast'`, `'fast'`,
+  `'sensitive'`, `'very-sensitive'`.
+- `local` (BOOLEAN, default `false`) — local alignment (soft-clipping)
+  instead of end-to-end.
+- `threads` (INTEGER, default `1`) — Bowtie2's `-p` value.
+- `max_secondary` (INTEGER, default `1`) — Bowtie2's `-k` value.
+- `extra_args` (VARCHAR) — extra Bowtie2 CLI flags, space-separated.
+- `quiet` (BOOLEAN, default `true`) — suppress Bowtie2's alignment
+  statistics on stderr.
+
+Subject sequences are loaded into memory and indexed at bind time.
+Query sequences stream in batches of 1024.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"query_table", "subject_table"},
+	    {
+	        "-- Build subject and query tables, then run a basic alignment\n"
+	        "CREATE TABLE subjects AS SELECT * FROM read_fastx('references.fasta');\n"
+	        "CREATE TABLE queries AS SELECT * FROM read_fastx('reads.fastq');\n"
+	        "SELECT * FROM align_bowtie2('queries', 'subjects');",
+	        "-- Most-sensitive preset, primary alignments only\n"
+	        "SELECT read_id, reference, position, mapq, cigar\n"
+	        "FROM align_bowtie2('queries', 'subjects',\n"
+	        "                   preset='very-sensitive', max_secondary=1)\n"
+	        "ORDER BY read_id;",
+	        "-- Local alignment mode for reads with adapter contamination\n"
+	        "SELECT * FROM align_bowtie2('queries', 'subjects', local=true);",
+	        "-- Pass extra Bowtie2 flags through\n"
+	        "SELECT * FROM align_bowtie2('queries', 'subjects', extra_args='--no-unal --rdg 5,3');",
+	        "-- Paired-end alignment from R1/R2\n"
+	        "CREATE TABLE paired AS SELECT * FROM read_fastx('R1.fastq', sequence2='R2.fastq');\n"
+	        "SELECT * FROM align_bowtie2('paired', 'subjects');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-tools"});
 }
 
 // Scalar function to check if bowtie2 is available in PATH
@@ -256,7 +310,19 @@ static void Bowtie2AvailableFunction(DataChunk &args, ExpressionState &state, Ve
 
 void RegisterBowtie2AvailableFunction(ExtensionLoader &loader) {
 	ScalarFunction bowtie2_available("bowtie2_available", {}, LogicalType::BOOLEAN, Bowtie2AvailableFunction);
-	loader.RegisterFunction(bowtie2_available);
+	static const std::string description = R"DOC(
+Return `TRUE` if both `bowtie2` and `bowtie2-build` are on the
+process `$PATH`, `FALSE` otherwise. Result is cached per process on
+first call. Use as a feature gate before invoking
+[`align_bowtie2`](../align_bowtie2/) or
+[`align_bowtie2_sharded`](../align_bowtie2_sharded/).
+)DOC";
+	RegisterDocumentedScalar(loader, bowtie2_available, description, {},
+	                         {
+	                             "SELECT bowtie2_available();",
+	                         },
+	                         /*alias_of=*/"", /*categories=*/{"alignment-tools"},
+	                         /*executable_examples=*/{"SELECT bowtie2_available();"});
 }
 
 } // namespace duckdb
