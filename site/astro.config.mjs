@@ -47,12 +47,16 @@ export default defineConfig({
 					],
 				},
 				{
-					label: 'Internals',
-					autogenerate: { directory: 'internals' },
+					label: 'Guides',
+					autogenerate: { directory: 'guides' },
 				},
 				{
 					label: 'Reference',
 					items: referenceSidebar,
+				},
+				{
+					label: 'Internals',
+					autogenerate: { directory: 'internals' },
 				},
 			],
 		}),
