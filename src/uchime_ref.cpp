@@ -1,4 +1,5 @@
 #include "uchime_ref.hpp"
+#include "documented_function.hpp"
 #include "table_function_common.hpp"
 #include "uchime_common.hpp"
 
@@ -6,6 +7,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/vector_size.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include <algorithm>
 
@@ -219,8 +221,69 @@ TableFunction UchimeRefTableFunction::GetFunction() {
 }
 
 void UchimeRefTableFunction::Register(ExtensionLoader &loader) {
-	auto tf = GetFunction();
-	loader.RegisterFunction(tf);
+	static const std::string description = R"DOC(
+Reference-based chimera detection using the
+[UCHIME](https://drive5.com/uchime/) algorithm
+(Edgar et al. 2011, *Bioinformatics* 27:2194-2200), powered by the
+[vsearch](https://github.com/torognes/vsearch) library
+(Rognes et al. 2016, *PeerJ* 4:e2584). Detects chimeric sequences by
+comparing each query against a trusted chimera-free reference
+database.
+
+Both `query_table` and the table named by `db` need `read_id`
+(VARCHAR) and `sequence1` (VARCHAR) columns. One row is emitted per
+query — non-chimeras have NULL parent / identity columns and `0` for
+the vote columns.
+
+### Required named parameters
+
+- `db` (VARCHAR) — table/view of trusted reference sequences.
+
+### Optional named parameters
+
+- `minh` (DOUBLE, default `0.28`) — minimum h-score to flag chimeric
+  (range `[0, 1]`).
+- `xn` (DOUBLE, default `8.0`) — weight of "no" votes (≥ `1.0`).
+- `dn` (DOUBLE, default `1.4`) — pseudo-count prior on "no" votes
+  (≥ `0`).
+- `mindiv` (DOUBLE, default `0.8`) — minimum divergence (percentage
+  points) from closest parent (≥ `0`).
+- `mindiffs` (INTEGER, default `3`) — minimum diffs in each segment
+  (≥ `1`).
+- `sample_id` (VARCHAR) — column to partition by. The shared
+  reference is loaded once; queries score per-sample. Execution is
+  serialized (vsearch wrapper is not concurrent-safe).
+
+### Output schema (18 columns, vsearch `--uchimeout`-compatible)
+
+`score`, `query_id`, `parent_a_id`, `parent_b_id`,
+`closest_parent_id`, `id_query_model`, `id_query_a`, `id_query_b`,
+`id_a_b`, `id_query_top`, `left_yes`, `left_no`, `left_abstain`,
+`right_yes`, `right_no`, `right_abstain`, `divergence`, `flag`
+(`Y` / `N` / `?`).
+
+`id_a_b` is computed only for chimeric (`Y`) and borderline (`?`)
+results — non-chimeras report `0.0` (vsearch computes it
+unconditionally; this skips an extra alignment per query).
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"query_table"},
+	    {
+	        "-- Detect chimeras against a curated reference database\n"
+	        "CREATE TABLE refs AS SELECT read_id, sequence1 FROM read_fastx('gold.fasta');\n"
+	        "CREATE TABLE queries AS SELECT read_id, sequence1 FROM read_fastx('amplicons.fasta');\n"
+	        "SELECT * FROM detect_chimera_uchime('queries', db := 'refs');",
+	        "-- Keep only sequences classified as non-chimeric\n"
+	        "CREATE TABLE clean_seqs AS\n"
+	        "SELECT q.* FROM queries q\n"
+	        "JOIN detect_chimera_uchime('queries', db := 'refs') u ON q.read_id = u.query_id\n"
+	        "WHERE u.flag = 'N';",
+	        "-- Count classifications\n"
+	        "SELECT flag, count(*) FROM detect_chimera_uchime('queries', db := 'refs')\n"
+	        "GROUP BY flag;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"microbiome"});
 }
 
 } // namespace duckdb

@@ -1,4 +1,5 @@
 #include "uchime_denovo.hpp"
+#include "documented_function.hpp"
 #include "table_function_common.hpp"
 #include "uchime_common.hpp"
 
@@ -9,6 +10,7 @@
 #include "duckdb/common/vector_size.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include <algorithm>
 
@@ -361,8 +363,60 @@ TableFunction UchimeDenovoTableFunction::GetFunction() {
 }
 
 void UchimeDenovoTableFunction::Register(ExtensionLoader &loader) {
-	auto tf = GetFunction();
-	loader.RegisterFunction(tf);
+	static const std::string description = R"DOC(
+De-novo chimera detection using the
+[UCHIME](https://drive5.com/uchime/) algorithm
+(Edgar et al. 2011, *Bioinformatics* 27:2194-2200), powered by the
+[vsearch](https://github.com/torognes/vsearch) library
+(Rognes et al. 2016, *PeerJ* 4:e2584). Uses abundance information —
+more-abundant sequences are assumed non-chimeric and serve as
+parents for less-abundant sequences. Unlike
+[`detect_chimera_uchime`](../detect_chimera_uchime/), this needs no
+reference database.
+
+Input must have `read_id` (VARCHAR), `sequence1` (VARCHAR), and
+`size` (integer type) columns. Sequences are processed in decreasing
+abundance order; the two most-abundant sequences are unconditionally
+treated as non-chimeric to seed the reference DB. Non-chimeric and
+borderline sequences are added to the in-memory reference DB
+incrementally; chimeric sequences are not.
+
+Single-threaded by construction (each result depends on prior
+classifications). One row per input sequence.
+
+### Optional named parameters
+
+- `abskew` (DOUBLE, default `2.0`) — abundance skew. Candidate
+  parents must have abundance ≥ `abskew * query_abundance`. Must be
+  ≥ `1.0`.
+- `minh`, `xn`, `dn`, `mindiv`, `mindiffs` — same as
+  [`detect_chimera_uchime`](../detect_chimera_uchime/).
+- `sample_id` (VARCHAR) — column to partition by. Each sample gets
+  its own k-mer index and bootstrap; a `read_id` that appears in
+  multiple samples is scored independently. Execution is serialized
+  per the vsearch wrapper's thread-safety constraints.
+
+### Output schema
+
+Same 18 columns as
+[`detect_chimera_uchime`](../detect_chimera_uchime/).
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"input_table"},
+	    {
+	        "-- Compute abundance, then run de-novo detection\n"
+	        "CREATE TABLE seqs AS\n"
+	        "  SELECT read_id, sequence1, count(*) AS size\n"
+	        "  FROM read_fastx('amplicons.fasta')\n"
+	        "  GROUP BY read_id, sequence1;\n"
+	        "SELECT * FROM detect_chimera_uchime_denovo('seqs');",
+	        "-- Filter out chimeric sequences\n"
+	        "SELECT s.* FROM seqs s\n"
+	        "JOIN detect_chimera_uchime_denovo('seqs') u ON s.read_id = u.query_id\n"
+	        "WHERE u.flag != 'Y';",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"microbiome"});
 }
 
 } // namespace duckdb

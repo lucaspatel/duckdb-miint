@@ -1,4 +1,5 @@
 #include "merge_pairs_function.hpp"
+#include "documented_function.hpp"
 #include "QualScore.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -348,7 +349,54 @@ void MergePairsFunction::Register(ExtensionLoader &loader) {
 	merge_10arg.init_local_state = MergePairsInitLocalState;
 	function_set.AddFunction(merge_10arg);
 
-	loader.RegisterFunction(function_set);
+	static const std::string description = R"DOC(
+Merge overlapping paired-end reads into a single consensus sequence
+with merged quality scores, powered by the
+[vsearch](https://github.com/torognes/vsearch) library
+(Rognes et al. 2016, *PeerJ* 4:e2584). Two overloads:
+
+- **4-arg** — defaults for all tuning knobs.
+- **10-arg** — explicit `minovlen`, `maxdiffs`, `maxdiffpct`,
+  `maxee`, `minlen`, `maxlen` after the four sequence/quality args.
+
+Quality inputs and outputs use numeric Phred (`LIST(UTINYINT)`),
+matching [`read_fastx`](../../table-functions/sequence-io/read_fastx/)
+output. NULL inputs return `(merged=false, …NULLs)`. The input
+length guard throws if `len(fwd) + len(rev) > 9999` (vsearch fixed
+buffer).
+
+### Returns
+
+`STRUCT(merged BOOLEAN, sequence VARCHAR, quality LIST(UTINYINT),
+ee_merged DOUBLE, ee_fwd DOUBLE, ee_rev DOUBLE, fwd_errors INTEGER,
+rev_errors INTEGER, overlap INTEGER)`. `sequence` and `quality` are
+NULL when `merged=false`.
+)DOC";
+
+	RegisterDocumentedScalarSet(
+	    loader, std::move(function_set), description,
+	    {
+	        {{"fwd_seq", "fwd_qual", "rev_seq", "rev_qual"},
+	         {LogicalTypeId::VARCHAR, LogicalTypeId::LIST, LogicalTypeId::VARCHAR, LogicalTypeId::LIST}},
+	        {{"fwd_seq", "fwd_qual", "rev_seq", "rev_qual", "minovlen", "maxdiffs", "maxdiffpct", "maxee", "minlen",
+	          "maxlen"},
+	         {LogicalTypeId::VARCHAR, LogicalTypeId::LIST, LogicalTypeId::VARCHAR, LogicalTypeId::LIST,
+	          LogicalTypeId::INTEGER, LogicalTypeId::INTEGER, LogicalTypeId::DOUBLE, LogicalTypeId::DOUBLE,
+	          LogicalTypeId::INTEGER, LogicalTypeId::INTEGER}},
+	    },
+	    {
+	        "-- Merge each pair, return success flag and merged sequence\n"
+	        "SELECT read_id,\n"
+	        "       (merge_pairs_vsearch(sequence1, qual1, sequence2, qual2)).merged AS merged,\n"
+	        "       (merge_pairs_vsearch(sequence1, qual1, sequence2, qual2)).sequence AS merged_seq\n"
+	        "FROM read_fastx('forward.fq', 'reverse.fq');",
+	        "-- Filter to successfully merged reads via LATERAL\n"
+	        "SELECT read_id, m.*\n"
+	        "FROM read_fastx('forward.fq', 'reverse.fq'),\n"
+	        "     LATERAL (SELECT merge_pairs_vsearch(sequence1, qual1, sequence2, qual2)) AS m(result)\n"
+	        "WHERE m.result.merged;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"sequence-tools"});
 }
 
 } // namespace duckdb

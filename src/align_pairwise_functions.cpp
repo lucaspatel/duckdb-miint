@@ -1,6 +1,7 @@
 #include "align_pairwise_functions.hpp"
 
 #include "WFA2Aligner.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
@@ -153,6 +154,46 @@ static void AlignPairwiseScoreExecute(DataChunk &args, ExpressionState &state, V
 	}
 }
 
+// Shared overloads for the three align_pairwise_* function sets. Each
+// function set carries a 2-arg form (defaults) and a 6-arg form (explicit
+// `mismatch / gap_open / gap_extend` penalties).
+static const std::initializer_list<DocumentedOverload> kAlignPairwiseOverloads = {
+    {{"query", "subject"}, {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR}},
+    {{"query", "subject", "method", "mismatch", "gap_open", "gap_extend"},
+     {LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR, LogicalTypeId::VARCHAR, LogicalTypeId::INTEGER,
+      LogicalTypeId::INTEGER, LogicalTypeId::INTEGER}},
+};
+
+static const std::string kAlignPairwiseShared = R"DOC(
+Gap-affine pairwise sequence alignment, powered by
+[WFA2-lib](https://github.com/smarco/WFA2-lib) (Wavefront Alignment
+Algorithm). Three companion functions at increasing detail levels:
+
+- [`align_pairwise_score`](../align_pairwise_score/) — score only
+  (fastest).
+- [`align_pairwise_cigar`](../align_pairwise_cigar/) — score + extended
+  CIGAR (uses `=`/`X` rather than `M`).
+- [`align_pairwise_full`](../align_pairwise_full/) — score + CIGAR +
+  the two aligned sequences with `-` gap characters.
+
+Each function has a 2-arg form (default penalties: `mismatch=4`,
+`gap_open=6`, `gap_extend=2`) and a 6-arg form with explicit
+penalties.
+
+### 6-arg parameters
+
+- `query` (VARCHAR), `subject` (VARCHAR).
+- `method` (VARCHAR) — currently only `'wfa2'`.
+- `mismatch` (INTEGER, > 0).
+- `gap_open` (INTEGER, ≥ 0).
+- `gap_extend` (INTEGER, > 0).
+
+Penalty parameters must be constant values (not column references)
+because they're consumed at bind time. NULL inputs produce NULL
+output. Alignment failure (e.g., excessive divergence) also produces
+NULL.
+)DOC";
+
 void AlignPairwiseScoreFunction::Register(ExtensionLoader &loader) {
 	ScalarFunctionSet function_set("align_pairwise_score");
 
@@ -173,7 +214,28 @@ void AlignPairwiseScoreFunction::Register(ExtensionLoader &loader) {
 	score_6arg.init_local_state = AlignPairwiseInitLocalState;
 	function_set.AddFunction(score_6arg);
 
-	loader.RegisterFunction(function_set);
+	static const std::string description = kAlignPairwiseShared + R"DOC(
+Returns the alignment score as `INTEGER` (0 = identical, higher =
+more divergent). Cheapest of the three since CIGAR / aligned
+sequences are not built.
+)DOC";
+
+	RegisterDocumentedScalarSet(loader, std::move(function_set), description, kAlignPairwiseOverloads,
+	                            {
+	                                "-- Identical sequences\n"
+	                                "SELECT align_pairwise_score('ACGT', 'ACGT');",
+	                                "-- One mismatch (default penalty 4)\n"
+	                                "SELECT align_pairwise_score('ACGT', 'ACAT');",
+	                                "-- Custom penalties\n"
+	                                "SELECT align_pairwise_score(query, subject, 'wfa2', 2, 6, 2)\n"
+	                                "FROM sequence_pairs;",
+	                            },
+	                            /*alias_of=*/"", /*categories=*/{"pairwise"},
+	                            /*executable_examples=*/
+	                            {
+	                                "SELECT align_pairwise_score('ACGT', 'ACGT');",
+	                                "SELECT align_pairwise_score('ACGT', 'ACAT');",
+	                            });
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +292,26 @@ void AlignPairwiseCigarFunction::Register(ExtensionLoader &loader) {
 	cigar_6arg.init_local_state = AlignPairwiseInitLocalState;
 	function_set.AddFunction(cigar_6arg);
 
-	loader.RegisterFunction(function_set);
+	static const std::string description = kAlignPairwiseShared + R"DOC(
+Returns `STRUCT(score INTEGER, cigar VARCHAR)` — extended CIGAR uses
+`=` for matches and `X` for mismatches (rather than `M`).
+)DOC";
+
+	RegisterDocumentedScalarSet(loader, std::move(function_set), description, kAlignPairwiseOverloads,
+	                            {
+	                                "-- Just the CIGAR string\n"
+	                                "SELECT (align_pairwise_cigar('ACGT', 'ACAT')).cigar;",
+	                                "-- Score + CIGAR over a pairs table\n"
+	                                "SELECT name,\n"
+	                                "       (align_pairwise_cigar(query_seq, ref_seq)).score,\n"
+	                                "       (align_pairwise_cigar(query_seq, ref_seq)).cigar\n"
+	                                "FROM sequence_pairs;",
+	                            },
+	                            /*alias_of=*/"", /*categories=*/{"pairwise"},
+	                            /*executable_examples=*/
+	                            {
+	                                "SELECT (align_pairwise_cigar('ACGT', 'ACAT')).cigar;",
+	                            });
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +378,26 @@ void AlignPairwiseFullFunction::Register(ExtensionLoader &loader) {
 	full_6arg.init_local_state = AlignPairwiseInitLocalState;
 	function_set.AddFunction(full_6arg);
 
-	loader.RegisterFunction(function_set);
+	static const std::string description = kAlignPairwiseShared + R"DOC(
+Returns `STRUCT(score INTEGER, cigar VARCHAR, query_aligned VARCHAR,
+subject_aligned VARCHAR)` — the two `*_aligned` strings have `-`
+inserted at gap positions, so the two columns are equal length.
+)DOC";
+
+	RegisterDocumentedScalarSet(loader, std::move(function_set), description, kAlignPairwiseOverloads,
+	                            {
+	                                "-- Aligned sequences with gaps shown\n"
+	                                "SELECT (align_pairwise_full('ACGT', 'AGT')).query_aligned,\n"
+	                                "       (align_pairwise_full('ACGT', 'AGT')).subject_aligned;",
+	                                "-- Custom-penalty alignment over a table of amplicon pairs\n"
+	                                "SELECT (align_pairwise_full(seq_a, seq_b, 'wfa2', 2, 4, 1)).query_aligned\n"
+	                                "FROM amplicon_pairs;",
+	                            },
+	                            /*alias_of=*/"", /*categories=*/{"pairwise"},
+	                            /*executable_examples=*/
+	                            {
+	                                "SELECT (align_pairwise_full('ACGT', 'AGT')).query_aligned;",
+	                            });
 }
 
 } // namespace duckdb
