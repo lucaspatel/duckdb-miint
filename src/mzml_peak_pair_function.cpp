@@ -1,9 +1,11 @@
 #include "mzml_peak_pair_function.hpp"
+#include "documented_function.hpp"
 #include "formula_parser.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include <atomic>
 
@@ -166,7 +168,31 @@ static void PeakPairExecute(ClientContext &context, TableFunctionInput &input, D
 void MzmlPeakPairFunction::Register(ExtensionLoader &loader) {
 	TableFunction func("mzml_peak_pair", {LogicalType::VARCHAR, LogicalType::VARCHAR}, PeakPairExecute, PeakPairBind,
 	                   PeakPairInitGlobal, PeakPairInitLocal);
-	loader.RegisterFunction(func);
+
+	static const std::string description = R"DOC(
+Find MS2 spectra containing a peak pair where one peak is at m/z = X
+and another at m/z = `2*X - formula(formula_str)`, within 0.1 Da
+tolerance. Returns all peaks from matching spectra (composes with
+`mzml_scaninfo`).
+
+Replaces a former SQL macro that suffered from severe performance
+issues (`SELECT DISTINCT mz FROM ms2` re-evaluated at each step of a
+~3,000-iteration recursive CTE). The C++ implementation materializes
+both the MS2 peak set and its distinct-`mz` table into temp tables
+once, dropping query time from ~18 s to ~1 s.
+
+`relation` must resolve to a table/view of MS2 peak rows.
+`formula_str` is parsed by [`formula()`](../../scalar-functions/mass-spec-analysis/formula/);
+the formula's monoisotopic mass replaces the recursive expression.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, std::move(func), description, {"relation", "formula_str"},
+	    {
+	        "-- Iron isotope peak-pair search across an MS2 peak table\n"
+	        "SELECT * FROM mzml_peak_pair('spectra', 'Fe');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"mass-spec-analysis"});
 }
 
 } // namespace duckdb

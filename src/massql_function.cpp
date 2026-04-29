@@ -1,4 +1,5 @@
 #include "massql_function.hpp"
+#include "documented_function.hpp"
 #include "massql_parser.hpp"
 #include "massql_transpiler.hpp"
 
@@ -6,6 +7,7 @@
 #include "duckdb/common/vector_operations/binary_executor.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "per_sample_table_function.hpp"
 
 namespace duckdb {
@@ -306,18 +308,67 @@ static void MassQLToSQLFunction(DataChunk &args, ExpressionState &state, Vector 
 // ── Registration ─────────────────────────────────────────────────────────────
 
 void MassQLFunction::Register(ExtensionLoader &loader) {
-	// massql(query, source) table function
-	// order_preservation_type=NO_ORDER: parallel samples produce non-deterministic interleaving.
+	// massql(query, source) table function — order_preservation_type=NO_ORDER:
+	// parallel samples produce non-deterministic interleaving.
 	TableFunction massql_func("massql", {LogicalType::VARCHAR, LogicalType::VARCHAR}, MassQLExecute, MassQLBind,
 	                          MassQLInitGlobal, MassQLInitLocal);
 	massql_func.named_parameters["sample_id"] = LogicalType::VARCHAR;
 	massql_func.order_preservation_type = OrderPreservationType::NO_ORDER;
-	loader.RegisterFunction(massql_func);
+
+	static const std::string massql_description = R"DOC(
+Execute a [MassQL](https://github.com/mwang87/MassQueryLanguage)
+query against mass-spectrometry data. The MassQL query is parsed,
+transpiled to SQL, and executed against `source` — either a catalog
+table/view name or a path to an `.mzML` file (auto-detected by
+extension).
+
+Output schema depends on the MassQL aggregation function used.
+
+### Optional named parameters
+
+- `sample_id` (VARCHAR) — column on `source` to partition by. The
+  query runs in parallel per distinct sample value (one DuckDB query
+  per sample on a dedicated thread connection); the sample column is
+  prepended to the output.
+
+For full MassQL syntax see the
+[Mass spectrometry & MassQL guide](../../../guides/massql/).
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, std::move(massql_func), massql_description, {"query", "source"},
+	    {
+	        "-- Find MS2 spectra with a product ion at m/z 167.0857\n"
+	        "SELECT * FROM massql('QUERY scaninfo(MS2DATA) WHERE MS2PROD=167.0857',\n"
+	        "                     'my_table');",
+	        "-- MS1 peak at m/z 200, +/- 5 ppm, directly from an mzML file\n"
+	        "SELECT * FROM massql('QUERY scannum(MS1DATA) WHERE MS1MZ=200:TOLERANCEPPM=5',\n"
+	        "                     'sample.mzML');",
+	        "-- Iron isotope pattern matching using the formula() helper\n"
+	        "SELECT * FROM massql('QUERY scaninfo(MS2DATA)\n"
+	        "                     WHERE MS2PROD=X AND MS2PROD=2*(X-formula(Fe))',\n"
+	        "                     'my_table');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"mass-spec-analysis"});
 
 	// massql_to_sql(query, source) scalar function
 	ScalarFunction to_sql_func("massql_to_sql", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
 	                           MassQLToSQLFunction);
-	loader.RegisterFunction(to_sql_func);
+	static const std::string to_sql_description = R"DOC(
+Transpile a MassQL query to the SQL string that
+[`massql`](../../table-functions/mass-spec-analysis/massql/) would
+execute internally. Useful for inspecting, EXPLAIN-ing, or wrapping
+the generated SQL in larger queries.
+
+Returns the transpiled SQL as a VARCHAR. Does not execute the query.
+)DOC";
+	RegisterDocumentedScalar(loader, to_sql_func, to_sql_description, {"query", "source"},
+	                         {
+	                             "-- Inspect the SQL that massql() would run\n"
+	                             "SELECT massql_to_sql('QUERY scaninfo(MS2DATA) WHERE MS2PROD=167.0857',\n"
+	                             "                     'my_table');",
+	                         },
+	                         /*alias_of=*/"", /*categories=*/{"mass-spec-analysis"});
 }
 
 } // namespace duckdb
