@@ -45,6 +45,12 @@ const POC_SLICE = new Set([
   'sequence_dna_as_regexp', 'sequence_rna_as_regexp',
   // mask_dust_function.cpp
   'mask_dust',
+  // compress_intervals.cpp
+  'compress_intervals',
+  // compute_coverage_depth.cpp
+  'compute_coverage_depth',
+  // formula_function.cpp
+  'formula',
 ]);
 
 // Per-function-type metadata. Keys must match `function_type` values from

@@ -1,6 +1,8 @@
 #include "compress_intervals.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/function/aggregate_function.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 
 namespace duckdb {
@@ -159,7 +161,37 @@ void CompressIntervalsFunction::Register(ExtensionLoader &loader) {
 	    CompressIntervalsOperation::Finalize, nullptr, nullptr,
 	    AggregateFunction::StateDestroy<IntervalState, CompressIntervalsOperation>);
 
-	loader.RegisterFunction(fun);
+	static const std::string description = R"DOC(
+Aggregate that merges overlapping or touching `(start, stop)` interval
+pairs into a minimal set of non-overlapping intervals, sorted by start.
+Two intervals merge when they overlap or touch (`stop1 == start2`).
+
+Returns a `LIST<STRUCT(start BIGINT, stop BIGINT)>`. Empty group → NULL.
+Thread-safe: each thread maintains its own state, merged at finalization.
+Auto-compresses state when accumulating >1M intervals to prevent memory
+bloat. Algorithm is O(n log n) — sort by start, single-pass merge.
+)DOC";
+	RegisterDocumentedAggregate(
+	    loader, fun, description, {"start", "stop"},
+	    {
+	        "-- Coverage regions per reference\n"
+	        "SELECT reference, compress_intervals(position, stop_position) AS coverage\n"
+	        "FROM read_alignments('alignments.bam') GROUP BY reference;",
+
+	        "-- Total covered bases per reference\n"
+	        "SELECT reference, SUM(c.stop - c.start) AS total_coverage\n"
+	        "FROM (SELECT reference, UNNEST(compress_intervals(position, stop_position)) AS c\n"
+	        "      FROM read_alignments('alignments.bam') GROUP BY reference);",
+
+	        "-- Merge feature intervals from different sources\n"
+	        "SELECT ref, compress_intervals(start, stop) AS merged_regions\n"
+	        "FROM features GROUP BY ref;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"intervals"},
+	    /*executable_examples=*/
+	    {
+	        "SELECT compress_intervals(s, e) FROM (VALUES (10, 20), (15, 25), (30, 40)) AS t(s, e);",
+	    });
 }
 
 } // namespace duckdb

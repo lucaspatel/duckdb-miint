@@ -1,5 +1,6 @@
 #include "formula_function.hpp"
 
+#include "documented_function.hpp"
 #include "formula_parser.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -22,8 +23,22 @@ static void FormulaScalarFunction(DataChunk &args, ExpressionState &state, Vecto
 }
 
 void FormulaFunction::Register(ExtensionLoader &loader) {
-	ScalarFunction formula_func("formula", {LogicalType::VARCHAR}, LogicalType::DOUBLE, FormulaScalarFunction);
-	loader.RegisterFunction(formula_func);
+	RegisterDocumentedScalar(
+	    loader,
+	    ScalarFunction("formula", {LogicalType::VARCHAR}, LogicalType::DOUBLE, FormulaScalarFunction),
+	    "Compute the monoisotopic mass (Daltons) of a chemical formula like `'H2O'`, `'C6H12O6'`, or `'Fe'`.",
+	    {"formula_string"},
+	    {
+	        "SELECT formula('H2O');       -- 18.010565",
+	        "SELECT formula('C6H12O6');   -- 180.063388",
+	        "SELECT formula('Fe');        -- 55.934936",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"mass-spec-analysis"},
+	    /*executable_examples=*/
+	    {
+	        "SELECT formula('H2O');",
+	        "SELECT formula('C6H12O6');",
+	    });
 }
 
 } // namespace duckdb

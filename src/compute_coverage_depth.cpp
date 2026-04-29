@@ -1,7 +1,9 @@
 #include "compute_coverage_depth.hpp"
 #include "alignment_functions_internal.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/function/aggregate_function.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 
 namespace duckdb {
@@ -226,7 +228,57 @@ void ComputeCoverageDepthFunction::Register(ExtensionLoader &loader) {
 		                            "('include_deletions' or 'exclude_deletions')");
 	};
 
-	loader.RegisterFunction(fun);
+	static const std::string description = R"DOC(
+Aggregate that computes per-position depth of coverage across a
+reference. Follows `samtools depth` semantics. Returns a
+`LIST(UINTEGER)` where element `i` is the depth at 1-based position
+`i+1`.
+
+### Modes
+
+- **`'include_deletions'`** — `M`, `=`, `X`, `D` count as coverage; `N`
+  excluded. Equivalent to `samtools depth -J`.
+- **`'exclude_deletions'`** — only `M`, `=`, `X` count; `D` and `N`
+  excluded. Equivalent to `samtools depth` default.
+
+`mode` must be a bind-time constant string (not a column reference).
+
+### Behavior
+
+- NULL rows ignored. Empty groups → NULL.
+- All rows in a group must share the same `reference_length`.
+- Reference length is capped at 2,000,000,000; for longer references,
+  use [`compress_intervals`](../compress_intervals/) instead.
+- Memory: allocates `reference_length × 4` bytes per group (~1 GB per
+  250 Mbp human chromosome). Plan accordingly.
+- Multi-threaded: each thread keeps independent state, merged at
+  finalization. Reads with only M/=/X (no N or excluded D) hit a fast
+  path that skips CIGAR walking.
+)DOC";
+	RegisterDocumentedAggregate(
+	    loader, fun, description, {"position", "stop_position", "cigar", "reference_length", "mode"},
+	    {
+	        "-- Per-position depth for one reference\n"
+	        "SELECT compute_coverage_depth(position, stop_position, cigar, 1000, 'exclude_deletions')\n"
+	        "FROM read_alignments('alignments.bam') WHERE reference = 'chr1';",
+
+	        "-- Mean depth via UNNEST\n"
+	        "SELECT AVG(depth) FROM (\n"
+	        "  SELECT UNNEST(compute_coverage_depth(position, stop_position, cigar, 1000, 'exclude_deletions')) AS depth\n"
+	        "  FROM read_alignments('alignments.bam') WHERE reference = 'chr1');",
+
+	        "-- Per-reference depth, joining a reference-lengths table\n"
+	        "SELECT reference,\n"
+	        "  compute_coverage_depth(position, stop_position, cigar,\n"
+	        "                          ref_lengths.length, 'include_deletions') AS depths\n"
+	        "FROM read_alignments('alignments.bam') AS a\n"
+	        "JOIN ref_lengths ON a.reference = ref_lengths.name\n"
+	        "GROUP BY reference, ref_lengths.length;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"intervals"});
+	// No executable_examples — every realistic call needs a CIGAR + a
+	// reference length, both fixture-bound. The compress_intervals
+	// doctest covers the same intervals category at runtime.
 }
 
 } // namespace duckdb
