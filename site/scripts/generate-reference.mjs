@@ -3,9 +3,10 @@
 // site/src/content/docs/reference/<type>/<category>/<name>.md, plus category
 // index pages and a per-type "module landing" page.
 //
-// POC scope: only the slice we are documenting in C++ for Daniel's review.
-// Functions outside this slice are skipped silently — they will be added once
-// the convention is approved and the rest of the codebase is migrated.
+// Every function the introspector found gets a page. Entries that lack a
+// description in their C++ registration render with a "needs migration"
+// placeholder; the missingMeta counter at the end of the run reports how
+// many are pending so the gap stays visible without breaking the build.
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -16,92 +17,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const IN = resolve(__dirname, '..', 'build', 'functions.json');
 const OUT_ROOT = resolve(__dirname, '..', 'src', 'content', 'docs', 'reference');
 const OVERVIEW_CONTENT_ROOT = resolve(__dirname, '..', 'src', 'overview-content');
-
-// Functions whose C++ registrations have been converted to the
-// RegisterDocumented* helper. Anything outside this set is silently skipped.
-const POC_SLICE = new Set([
-  // alignment_flag_functions.cpp
-  'alignment_is_paired', 'is_paired',
-  'alignment_is_proper_pair', 'is_proper_pair',
-  'alignment_is_unmapped', 'is_unmapped',
-  'alignment_is_mate_unmapped', 'is_munmap',
-  'alignment_is_reverse', 'is_reverse',
-  'alignment_is_mate_reverse', 'is_mreverse',
-  'alignment_is_read1', 'is_read1',
-  'alignment_is_read2', 'is_read2',
-  'alignment_is_secondary', 'is_secondary',
-  'alignment_is_primary',
-  'alignment_is_qc_failed', 'is_qcfail',
-  'alignment_is_duplicate', 'is_dup',
-  'alignment_is_supplementary', 'is_supplementary',
-  // alignment_functions.cpp
-  'alignment_seq_identity',
-  'alignment_query_length',
-  'alignment_query_coverage',
-  // read_alignments.cpp
-  'read_alignments', 'read_sam',
-  // sequence_functions.cpp
-  'sequence_dna_reverse_complement', 'sequence_rna_reverse_complement',
-  'sequence_dna_as_regexp', 'sequence_rna_as_regexp',
-  // mask_dust_function.cpp
-  'mask_dust',
-  // compress_intervals.cpp
-  'compress_intervals',
-  // compute_coverage_depth.cpp
-  'compute_coverage_depth',
-  // formula_function.cpp
-  'formula',
-  // read_newick.cpp + read_jplace_newick.cpp
-  'read_newick', 'read_jplace_newick',
-  // read_sequences_sam.cpp + read_sequences_sff.cpp
-  'read_sequences_sam', 'read_sequences_sff',
-  // read_biom.cpp
-  'read_biom',
-  // read_fastx.cpp
-  'read_fastx',
-  // read_mzml.cpp + read_mzml_chromatograms.cpp + read_mzxml.cpp
-  'read_mzml', 'read_mzml_chromatograms', 'read_mzxml',
-  // read_ncbi*.cpp
-  'read_ncbi', 'read_ncbi_fasta', 'read_ncbi_annotation',
-  // read_ena*.cpp
-  'read_ena', 'read_ena_attributes', 'ena_searchable_fields', 'read_ena_sequences',
-  // align_*.cpp (aligners, Phase 5)
-  'align_minimap2', 'save_minimap2_index', 'align_minimap2_sharded',
-  'align_bowtie2', 'bowtie2_available', 'align_bowtie2_sharded',
-  'align_mafft', 'align_sortmerna', 'align_sortmerna_rrna',
-  // Phase 7 — analysis grab-bag
-  'alignment_slice',
-  'cluster_sequences_vsearch', 'search_sequences_vsearch', 'deblur',
-  'tree_resolve_placement',
-  'woltka_ogu',
-  // Phase 8 — mass spec
-  'massql', 'massql_to_sql', 'mzml_peak_pair',
-  // Phase 9 — Rype
-  'rype_classify', 'rype_log_ratio',
-  'rype_extract_minimizer_set', 'rype_extract_strand_minimizers',
-  // Phase 6 — COPY formats (routed via miint_documented_copy_functions)
-  'fastq', 'fasta', 'sam', 'bam', 'newick', 'biom',
-  // Phase 3 cleanup
-  'detect_chimera_uchime', 'detect_chimera_uchime_denovo',
-  'merge_pairs_vsearch',
-  'align_pairwise_score', 'align_pairwise_cigar', 'align_pairwise_full',
-  // Phase 10 — SQL macros (descriptions overlaid via miint_documented_macros)
-  'miint_warnings',
-  'parse_gff_attributes', 'read_gff', 'genome_coverage', 'read_jplace',
-  'mz_within', 'mz_within_ppm', 'massdefect', 'mz_massdefect_within',
-  'mzml_peaks', 'mzml_scaninfo', 'mzml_scansum', 'mzml_scannum',
-  'mzml_scanmz', 'mzml_scanmaxint',
-  'mzml_ms1_peaks', 'mzml_ms2_peaks', 'mzml_ms1_parent_peaks', 'mzml_ms2_child_peaks',
-  'mzml_ms1_where_ms2prod', 'mzml_ms2_where_ms1mz',
-  'mzml_ms1_where_ms2prec', 'mzml_ms2_where_ms2prod_and_ms1mz',
-  'mzml_filter_mz', 'mzml_filter_nl',
-  'mzml_x_offset_ntuple', 'mzml_x_offset_pair', 'mzml_x_offset_triplet',
-  'mzml_x_prec_prod', 'mzml_x_prec_massdefect', 'mzml_x_ms1_ms2_prec',
-  'mzml_x_offset_pair_range', 'mzml_or_cardinality',
-  'mzml_i_norm', 'mzml_i_tic_norm',
-  'mzml_excluded_ms2prod', 'mzml_excluded_ms1mz', 'mzml_excluded_ms2prec',
-  'mzml_isotope_pattern',
-]);
 
 // Per-function-type metadata. Keys must match `function_type` values from
 // duckdb_functions(). Order in TYPE_ORDER drives sidebar order.
@@ -165,15 +80,20 @@ for (const t of Object.values(TYPES)) {
 
 const errors = [];
 
-// Filter to POC slice and enrich each function with its picked variant +
-// home category (first wins). Single source of truth for downstream passes.
-const pocFunctions = data.functions
-  .filter((fn) => POC_SLICE.has(fn.name))
-  .map((fn) => {
-    const primary = fn.variants.find((v) => v.description) ?? fn.variants[0];
-    const category = (primary.categories ?? [])[0] ?? UNCATEGORIZED;
-    return { ...fn, primary, category };
-  });
+// Enrich each catalog entry with its picked variant + home category
+// (first wins). Single source of truth for downstream passes.
+//
+// No allowlist — every function the introspector found gets a page, so
+// new C++ registrations show up in the docs as soon as they land. Pages
+// for entries that lack a description render with a "needs migration"
+// placeholder; the missingMeta counter at the end of the run reports
+// how many are still pending so the gap is visible without breaking
+// the build.
+const pocFunctions = data.functions.map((fn) => {
+  const primary = fn.variants.find((v) => v.description) ?? fn.variants[0];
+  const category = (primary.categories ?? [])[0] ?? UNCATEGORIZED;
+  return { ...fn, primary, category };
+});
 
 // Reject any C++-supplied category not in KNOWN_CATEGORIES. Catches typos
 // at doc-build time before they spread.
@@ -278,7 +198,12 @@ if (errors.length) {
 
 console.error(`generate: wrote ${written} pages + ${categoryIndexes} category indexes + ${typeIndexes} type indexes`);
 if (missingMeta) {
-  console.error(`generate: WARNING ${missingMeta} POC functions still lack description in C++`);
+  const msg = `generate: ${missingMeta} function(s) still lack a description in C++`;
+  if (process.env.MIINT_DOCS_STRICT === '1') {
+    console.error(`${msg} (MIINT_DOCS_STRICT=1, treating as error)`);
+    process.exit(1);
+  }
+  console.error(`${msg} (set MIINT_DOCS_STRICT=1 to fail the build on this)`);
 }
 
 // ---------- helpers ----------
@@ -410,7 +335,7 @@ function renderTypeIndex(type, catsMap) {
   const notes = loadOverviewFragment('types', type, 'notes');
 
   const lines = [
-    frontmatter({ title, description: `All ${totalFns} ${title.toLowerCase()} registered by miint (POC slice).` }).trimEnd(),
+    frontmatter({ title, description: `All ${totalFns} ${title.toLowerCase()} registered by miint.` }).trimEnd(),
     '',
     `<!-- Auto-generated index for function type '${type}'. Hand-authored prose, if any, lives in site/src/overview-content/types/${type}.{intro,notes}.md -->`,
     '',
