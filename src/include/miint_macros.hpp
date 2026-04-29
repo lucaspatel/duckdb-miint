@@ -1,5 +1,6 @@
 #pragma once
 
+#include "documented_function.hpp"
 #include "duckdb.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
@@ -716,60 +717,143 @@ const std::string GENOME_COVERAGE = // NOLINT
 class MIINTMacros {
 public:
 	static void Register(ExtensionLoader &loader) {
-		auto &instance = loader.GetDatabaseInstance();
-		Connection con(instance);
-
-		auto register_macro = [&](const std::string &sql, const char *name) {
-			auto result = con.Query(sql);
-			if (result->HasError()) {
-				throw InternalException("Failed to register macro '%s': %s", name, result->GetError());
-			}
+		// Short alias to keep this list legible — RegisterDocumentedMacro
+		// runs the CREATE statement AND records (description, examples,
+		// categories) in a sidecar registry that the docs build joins by
+		// name into the macro / table_macro entries duckdb_functions()
+		// already surfaces.
+		auto reg = [&](const std::string &name, const std::string &sql, const std::string &description,
+		               const std::vector<std::string> &examples,
+		               std::initializer_list<const char *> categories) {
+			RegisterDocumentedMacro(loader, name, sql, description, examples, /*alias_of=*/"", categories);
 		};
 
-		register_macro(MIINT_WARNINGS, "miint_warnings");
+		// Most mzml_* macros below are MassQL transpilation helpers — the
+		// MassQL-to-SQL pipeline emits calls to them, and they're documented
+		// by the MassQL guide rather than expected to be hand-written in
+		// queries. Keeping descriptions terse and pointing at that guide.
+		const std::string massql_ref =
+		    "Internal MassQL transpilation helper — emitted by "
+		    "[`massql_to_sql`](../../scalar-functions/mass-spec-analysis/massql_to_sql/). "
+		    "See the [Mass spectrometry & MassQL guide](../../../guides/massql/) for full "
+		    "context.";
 
-		register_macro(PARSE_GFF_ATTRIBUTES, "parse_gff_attributes");
-		register_macro(READ_GFF, "read_gff");
-		register_macro(GENOME_COVERAGE, "genome_coverage");
+		reg("miint_warnings", MIINT_WARNINGS,
+		    "Operational warnings emitted by user-facing miint code, queryable "
+		    "as a table. Populated by skip-events such as missing accessions "
+		    "in [`read_ena_sequences`](../../table-functions/ena-io/read_ena_sequences/), "
+		    "the SFF `max_sequences` caveat, ignored `threads` parameters, "
+		    "mid-stream download failures, etc. Returns "
+		    "`(timestamp TIMESTAMP WITH TIME ZONE, message VARCHAR)`. "
+		    "Backed by `duckdb_logs()` filtered to type `'MiintWarning'`; "
+		    "scoped per session and in-memory by default.",
+		    {"-- See what got skipped in a recent ENA scan\n"
+		     "SELECT COUNT(*) FROM read_ena_sequences('PRJEB1234');\n"
+		     "SELECT timestamp, message FROM miint_warnings();"},
+		    {});
 
-		register_macro(READ_JPLACE, "read_jplace");
+		reg("parse_gff_attributes", PARSE_GFF_ATTRIBUTES,
+		    "Parse a single GFF3 attributes column (`key1=val1;key2=val2;...`) "
+		    "into a `MAP(VARCHAR, VARCHAR)`. Used internally by "
+		    "[`read_gff`](../read_gff/) but exposed for ad-hoc parsing.",
+		    {"-- Map access from a parsed attribute string\n"
+		     "SELECT parse_gff_attributes('ID=gene1;Name=GeneA')['Name'];"},
+		    {});
 
-		register_macro(MZ_WITHIN, "mz_within");
-		register_macro(MZ_WITHIN_PPM, "mz_within_ppm");
-		register_macro(MZML_PEAKS, "mzml_peaks");
-		register_macro(MZML_SCANINFO, "mzml_scaninfo");
-		register_macro(MZML_SCANSUM, "mzml_scansum");
-		register_macro(MZML_SCANNUM, "mzml_scannum");
-		register_macro(MZML_SCANMZ, "mzml_scanmz");
-		register_macro(MZML_SCANMAXINT, "mzml_scanmaxint");
-		register_macro(MZML_MS1_PEAKS, "mzml_ms1_peaks");
-		register_macro(MZML_MS2_PEAKS, "mzml_ms2_peaks");
-		register_macro(MZML_MS1_PARENT_PEAKS, "mzml_ms1_parent_peaks");
-		register_macro(MZML_MS2_CHILD_PEAKS, "mzml_ms2_child_peaks");
-		register_macro(MZML_MS1_WHERE_MS2PROD, "mzml_ms1_where_ms2prod");
-		register_macro(MZML_MS2_WHERE_MS1MZ, "mzml_ms2_where_ms1mz");
-		register_macro(MZML_MS1_WHERE_MS2PREC, "mzml_ms1_where_ms2prec");
-		register_macro(MZML_MS2_WHERE_MS2PROD_AND_MS1MZ, "mzml_ms2_where_ms2prod_and_ms1mz");
-		register_macro(MZML_FILTER_MZ, "mzml_filter_mz");
-		register_macro(MZML_FILTER_NL, "mzml_filter_nl");
-		register_macro(MASSDEFECT, "massdefect");
-		register_macro(MZ_MASSDEFECT_WITHIN, "mz_massdefect_within");
+		reg("read_gff", READ_GFF,
+		    "Read a GFF3 file into a typed table. Columns: `seqid`, `source`, "
+		    "`type`, `position` (INTEGER), `stop_position` (INTEGER), `score` "
+		    "(DOUBLE, nullable), `strand` (VARCHAR, nullable), `phase` "
+		    "(INTEGER, nullable), `attributes` (MAP). The `.` placeholder used "
+		    "by GFF for missing values becomes SQL NULL; `attributes` is parsed "
+		    "via [`parse_gff_attributes`](../parse_gff_attributes/).",
+		    {"SELECT seqid, type, position, stop_position, attributes['ID']\n"
+		     "FROM read_gff('annotations.gff3') WHERE type = 'gene';"},
+		    {});
+
+		reg("genome_coverage", GENOME_COVERAGE,
+		    "Compute breadth-of-coverage per genome from per-read alignments. "
+		    "Joins alignments to a `(genome_id, total_length)` table and "
+		    "returns `(genome_id, covered, proportion_covered)`. Useful as a "
+		    "post-aggregation step on the output of "
+		    "[`read_alignments`](../../table-functions/alignment-io/read_alignments/) "
+		    "or any aligner whose output schema includes "
+		    "`(reference, position, stop_position)`.",
+		    {"SELECT * FROM genome_coverage('alignments_view', 'genome_lengths_view',\n"
+		     "                              'genome_id_col');"},
+		    {"intervals"});
+
+		reg("read_jplace", READ_JPLACE,
+		    "Read a [`.jplace`](http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0031009) "
+		    "phylogenetic placement file into a typed table of fragment "
+		    "placements (`fragment`, `edge_num`, `like_weight_ratio`, "
+		    "`distal_length`, `pendant_length`). Pair with "
+		    "[`read_jplace_newick`](../../table-functions/phylogeny/read_jplace_newick/) "
+		    "to also extract the reference tree.",
+		    {"-- Confident placements only\n"
+		     "SELECT fragment, edge_num FROM read_jplace('result.jplace')\n"
+		     "WHERE like_weight_ratio > 0.8;"},
+		    {"phylogeny"});
+
+		reg("mz_within", MZ_WITHIN,
+		    "Test whether two m/z values are within `tol` Daltons of each "
+		    "other. Returns BOOLEAN.",
+		    {"SELECT mz_within(167.0857, 167.085, 0.01);"},
+		    {"mass-spec-analysis"});
+
+		reg("mz_within_ppm", MZ_WITHIN_PPM,
+		    "Test whether two m/z values are within `tolerance_ppm` parts per "
+		    "million of each other. Returns BOOLEAN.",
+		    {"SELECT mz_within_ppm(167.0857, 167.085, 5.0);"},
+		    {"mass-spec-analysis"});
+
+		reg("massdefect", MASSDEFECT,
+		    "Compute the mass defect of an m/z value: the fractional part "
+		    "after subtracting the integer mass. Useful for filtering peak "
+		    "lists by isotope pattern signature.",
+		    {"SELECT massdefect(220.345);"},
+		    {"mass-spec-analysis"});
+
+		reg("mz_massdefect_within", MZ_MASSDEFECT_WITHIN,
+		    "Test whether two m/z values have mass defects within `tol` of each "
+		    "other. Companion to [`mz_within`](../mz_within/) for "
+		    "isotope-pattern-based filtering.",
+		    {"SELECT mz_massdefect_within(220.345, 220.348, 0.01);"},
+		    {"mass-spec-analysis"});
+
+		reg("mzml_peaks", MZML_PEAKS, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_scaninfo", MZML_SCANINFO, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_scansum", MZML_SCANSUM, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_scannum", MZML_SCANNUM, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_scanmz", MZML_SCANMZ, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_scanmaxint", MZML_SCANMAXINT, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_ms1_peaks", MZML_MS1_PEAKS, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_ms2_peaks", MZML_MS2_PEAKS, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_ms1_parent_peaks", MZML_MS1_PARENT_PEAKS, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_ms2_child_peaks", MZML_MS2_CHILD_PEAKS, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_ms1_where_ms2prod", MZML_MS1_WHERE_MS2PROD, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_ms2_where_ms1mz", MZML_MS2_WHERE_MS1MZ, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_ms1_where_ms2prec", MZML_MS1_WHERE_MS2PREC, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_ms2_where_ms2prod_and_ms1mz", MZML_MS2_WHERE_MS2PROD_AND_MS1MZ, massql_ref, {},
+		    {"mass-spec-analysis"});
+		reg("mzml_filter_mz", MZML_FILTER_MZ, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_filter_nl", MZML_FILTER_NL, massql_ref, {}, {"mass-spec-analysis"});
 		// ntuple must be registered before pair and triplet (they delegate to it)
-		register_macro(MZML_X_OFFSET_NTUPLE, "mzml_x_offset_ntuple");
-		register_macro(MZML_X_OFFSET_PAIR, "mzml_x_offset_pair");
-		register_macro(MZML_X_OFFSET_TRIPLET, "mzml_x_offset_triplet");
-		register_macro(MZML_X_PREC_PROD, "mzml_x_prec_prod");
-		register_macro(MZML_X_PREC_MASSDEFECT, "mzml_x_prec_massdefect");
-		register_macro(MZML_X_MS1_MS2_PREC, "mzml_x_ms1_ms2_prec");
-		register_macro(MZML_X_OFFSET_PAIR_RANGE, "mzml_x_offset_pair_range");
-		register_macro(MZML_OR_CARDINALITY, "mzml_or_cardinality");
+		reg("mzml_x_offset_ntuple", MZML_X_OFFSET_NTUPLE, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_x_offset_pair", MZML_X_OFFSET_PAIR, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_x_offset_triplet", MZML_X_OFFSET_TRIPLET, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_x_prec_prod", MZML_X_PREC_PROD, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_x_prec_massdefect", MZML_X_PREC_MASSDEFECT, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_x_ms1_ms2_prec", MZML_X_MS1_MS2_PREC, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_x_offset_pair_range", MZML_X_OFFSET_PAIR_RANGE, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_or_cardinality", MZML_OR_CARDINALITY, massql_ref, {}, {"mass-spec-analysis"});
 		// mzml_peak_pair is now a C++ table function (MzmlPeakPairFunction) for performance.
-		register_macro(MZML_I_NORM, "mzml_i_norm");
-		register_macro(MZML_I_TIC_NORM, "mzml_i_tic_norm");
-		register_macro(MZML_EXCLUDED_MS2PROD, "mzml_excluded_ms2prod");
-		register_macro(MZML_EXCLUDED_MS1MZ, "mzml_excluded_ms1mz");
-		register_macro(MZML_EXCLUDED_MS2PREC, "mzml_excluded_ms2prec");
-		register_macro(MZML_ISOTOPE_PATTERN, "mzml_isotope_pattern");
+		reg("mzml_i_norm", MZML_I_NORM, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_i_tic_norm", MZML_I_TIC_NORM, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_excluded_ms2prod", MZML_EXCLUDED_MS2PROD, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_excluded_ms1mz", MZML_EXCLUDED_MS1MZ, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_excluded_ms2prec", MZML_EXCLUDED_MS2PREC, massql_ref, {}, {"mass-spec-analysis"});
+		reg("mzml_isotope_pattern", MZML_ISOTOPE_PATTERN, massql_ref, {}, {"mass-spec-analysis"});
 	}
 };
 
