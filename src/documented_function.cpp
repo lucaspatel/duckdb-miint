@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
@@ -118,6 +119,17 @@ void RegisterDocumentedTableFunction(ExtensionLoader &loader, TableFunction func
 	const std::string function_name = function.name;
 	auto fd = BuildDescription(function.arguments, description, positional_parameter_names, examples, categories);
 	RegisterWithInfo(loader, CreateTableFunctionInfo(std::move(function)), std::move(fd), alias_of);
+	AppendDoctests(function_name, executable_examples);
+}
+
+void RegisterDocumentedAggregate(ExtensionLoader &loader, AggregateFunction function, const std::string &description,
+                                 std::initializer_list<const char *> parameter_names,
+                                 const std::vector<std::string> &examples, const std::string &alias_of,
+                                 std::initializer_list<const char *> categories,
+                                 const std::vector<std::string> &executable_examples) {
+	const std::string function_name = function.name;
+	auto fd = BuildDescription(function.arguments, description, parameter_names, examples, categories);
+	RegisterWithInfo(loader, CreateAggregateFunctionInfo(std::move(function)), std::move(fd), alias_of);
 	AppendDoctests(function_name, executable_examples);
 }
 

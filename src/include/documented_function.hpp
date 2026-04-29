@@ -85,6 +85,14 @@ void RegisterDocumentedScalarSet(ExtensionLoader &loader, ScalarFunctionSet set,
                                  std::initializer_list<FunctionDescription> per_overload_descriptions,
                                  const std::string &alias_of = "");
 
+// Register an aggregate function with documentation routed through
+// duckdb_functions().
+void RegisterDocumentedAggregate(ExtensionLoader &loader, AggregateFunction function, const std::string &description,
+                                 std::initializer_list<const char *> parameter_names,
+                                 const std::vector<std::string> &examples, const std::string &alias_of = "",
+                                 std::initializer_list<const char *> categories = {},
+                                 const std::vector<std::string> &executable_examples = {});
+
 // Register a table function. positional_parameter_names names the
 // positional arguments; the named-parameter map on TableFunction is
 // surfaced separately by the catalog.
