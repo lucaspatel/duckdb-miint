@@ -40,6 +40,9 @@ const POC_SLICE = new Set([
   'alignment_query_coverage',
   // read_alignments.cpp
   'read_alignments', 'read_sam',
+  // sequence_functions.cpp
+  'sequence_dna_reverse_complement', 'sequence_rna_reverse_complement',
+  'sequence_dna_as_regexp', 'sequence_rna_as_regexp',
 ]);
 
 // Per-function-type metadata. Keys must match `function_type` values from

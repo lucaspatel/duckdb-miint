@@ -1,4 +1,5 @@
 #include "sequence_functions.hpp"
+#include "documented_function.hpp"
 #include "sequence_utils.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
@@ -216,21 +217,88 @@ static void SequenceRnaAsRegexpFunction(DataChunk &args, ExpressionState &state,
 }
 
 void SequenceFunctions::Register(ExtensionLoader &loader) {
-	ScalarFunction sequence_dna_reverse_complement("sequence_dna_reverse_complement", {LogicalType::VARCHAR},
-	                                               LogicalType::VARCHAR, SequenceDnaReverseComplementFunction);
-	loader.RegisterFunction(sequence_dna_reverse_complement);
+	static const std::string desc_revcomp_dna = R"DOC(
+Reverse-complement a DNA sequence. Reverses the order (5'→3' becomes
+3'→5') and complements each base via Watson-Crick pairing, preserving
+case. Supports the full IUPAC ambiguity codes; gap characters (`.`, `-`)
+map to themselves. **Strict molecular-type validation:** rejects U bases
+with an error.
 
-	ScalarFunction sequence_rna_reverse_complement("sequence_rna_reverse_complement", {LogicalType::VARCHAR},
-	                                               LogicalType::VARCHAR, SequenceRnaReverseComplementFunction);
-	loader.RegisterFunction(sequence_rna_reverse_complement);
+| IUPAC | Complement | IUPAC | Complement |
+|---|---|---|---|
+| A | T | R (A,G) | Y (C,T) |
+| C | G | Y (C,T) | R (A,G) |
+| G | C | S (G,C) | S |
+| T | A | W (A,T) | W |
+| N | N | K (G,T) | M (A,C) |
+| .,- | .,- | M (A,C) | K (G,T) |
+)DOC";
+	RegisterDocumentedScalar(
+	    loader,
+	    ScalarFunction("sequence_dna_reverse_complement", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                   SequenceDnaReverseComplementFunction),
+	    desc_revcomp_dna, {"sequence"},
+	    {
+	        "-- Basic DNA reverse complement\nSELECT sequence_dna_reverse_complement('ATCG');  -- 'CGAT'",
+	        "-- IUPAC ambiguity codes\nSELECT sequence_dna_reverse_complement('ACGTMRWSYKVHDBN.-');",
+	        "-- Find palindromic reads\nSELECT read_id FROM read_fastx('reads.fq')\n"
+	        "WHERE sequence1 = sequence_dna_reverse_complement(sequence1);",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"sequence-tools"},
+	    /*executable_examples=*/{"SELECT sequence_dna_reverse_complement('ATCG');"});
 
-	ScalarFunction sequence_dna_as_regexp("sequence_dna_as_regexp", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
-	                                      SequenceDnaAsRegexpFunction);
-	loader.RegisterFunction(sequence_dna_as_regexp);
+	static const std::string desc_revcomp_rna = R"DOC(
+Reverse-complement an RNA sequence. Same shape as `sequence_dna_reverse_complement`
+but with `A↔U` instead of `A↔T`. **Strict molecular-type validation:**
+rejects T bases with an error.
+)DOC";
+	RegisterDocumentedScalar(
+	    loader,
+	    ScalarFunction("sequence_rna_reverse_complement", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                   SequenceRnaReverseComplementFunction),
+	    desc_revcomp_rna, {"sequence"},
+	    {
+	        "SELECT sequence_rna_reverse_complement('AUCG');  -- 'CGAU'",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"sequence-tools"},
+	    /*executable_examples=*/{"SELECT sequence_rna_reverse_complement('AUCG');"});
 
-	ScalarFunction sequence_rna_as_regexp("sequence_rna_as_regexp", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
-	                                      SequenceRnaAsRegexpFunction);
-	loader.RegisterFunction(sequence_rna_as_regexp);
+	static const std::string desc_regexp_dna = R"DOC(
+Convert a DNA sequence with IUPAC ambiguity codes into a regular
+expression suitable for `regexp_matches`. Useful for matching degenerate
+primers and probes. Unambiguous bases stay as themselves; ambiguous
+codes expand to character classes (`R → [AG]`, `N → [ACGT]`, etc.); gap
+characters become `.` (regex wildcard). Case is preserved. Rejects U
+bases.
+)DOC";
+	RegisterDocumentedScalar(
+	    loader,
+	    ScalarFunction("sequence_dna_as_regexp", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                   SequenceDnaAsRegexpFunction),
+	    desc_regexp_dna, {"sequence"},
+	    {
+	        "SELECT sequence_dna_as_regexp('ATNGG');  -- 'AT[ACGT]GG'",
+	        "-- Find reads matching a degenerate primer\n"
+	        "SELECT read_id FROM read_fastx('reads.fq')\n"
+	        "WHERE regexp_matches(sequence1, sequence_dna_as_regexp('ATNGG'));",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"sequence-tools"},
+	    /*executable_examples=*/{"SELECT sequence_dna_as_regexp('ATNGG');"});
+
+	static const std::string desc_regexp_rna = R"DOC(
+RNA counterpart of `sequence_dna_as_regexp` — same expansion rules, with
+`U` instead of `T` in character classes. Rejects T bases.
+)DOC";
+	RegisterDocumentedScalar(
+	    loader,
+	    ScalarFunction("sequence_rna_as_regexp", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
+	                   SequenceRnaAsRegexpFunction),
+	    desc_regexp_rna, {"sequence"},
+	    {
+	        "SELECT sequence_rna_as_regexp('AUNGG');  -- 'AU[ACGU]GG'",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"sequence-tools"},
+	    /*executable_examples=*/{"SELECT sequence_rna_as_regexp('AUNGG');"});
 }
 
 } // namespace duckdb
