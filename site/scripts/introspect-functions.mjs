@@ -61,7 +61,7 @@ const loadStmt = useLocalBuild
   ? `LOAD '${MIINT_EXT}'`
   : `INSTALL httpfs; LOAD httpfs; FORCE INSTALL miint FROM '${MIINT_REPO}'; LOAD miint`;
 
-function runDuckDB(sql) {
+function runDuckDB(sql, { allowFail = false } = {}) {
   // -unsigned is needed for both modes: the local-build path is unsigned,
   // and the released artifact at MIINT_REPO is not signed by a key the
   // stock duckdb client recognizes for that URL. (Community-extensions
@@ -72,6 +72,12 @@ function runDuckDB(sql) {
     maxBuffer: 64 * 1024 * 1024,
   });
   if (res.status !== 0) {
+    if (allowFail) {
+      // Caller wants soft failure (e.g. an optional sidecar macro that
+      // older released artifacts don't ship). Surface the error so the
+      // caller can decide what to do, but don't kill the process.
+      throw new Error(`duckdb exited ${res.status}\nSTDERR:\n${res.stderr}`);
+    }
     process.stderr.write(`duckdb exited ${res.status}\nSTDERR:\n${res.stderr}\n`);
     process.exit(1);
   }
@@ -132,9 +138,9 @@ SELECT name AS function_name,
        examples,
        categories
 FROM miint_documented_copy_functions();
-`);
-} catch (_) {
-  // ignore — macro unavailable in this build
+`, { allowFail: true });
+} catch (e) {
+  console.error(`introspect: miint_documented_copy_functions() not in this build, skipping COPY pages\n  ${e.message.split('\n')[0]}`);
 }
 for (const fn of copyFns) {
   newFns.push({
@@ -162,9 +168,9 @@ try {
 ${loadStmt};
 SELECT name, description, examples, categories, NULLIF(alias_of, '') AS alias_of
 FROM miint_documented_macros();
-`);
-} catch (_) {
-  // ignore
+`, { allowFail: true });
+} catch (e) {
+  console.error(`introspect: miint_documented_macros() not in this build, skipping macro descriptions\n  ${e.message.split('\n')[0]}`);
 }
 const macroDocsByName = new Map(macroDocs.map((r) => [r.name, r]));
 for (const fn of newFns) {
