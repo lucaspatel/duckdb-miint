@@ -56,6 +56,28 @@ const TYPE_ORDER = ['table', 'scalar', 'aggregate', 'table_macro', 'macro'];
 const ACRONYMS = new Set(['sam', 'bam', 'io', 'qc', 'cigar', 'md', 'nm', 'rna', 'dna']);
 const UNCATEGORIZED = '_uncategorized';
 
+// Fixed taxonomy. Every category attached to a RegisterDocumented* call
+// must be in this set. New categories require touching this file
+// (intentional friction — keeps the taxonomy small and reviewable).
+// See site/MIGRATION.md (local-only doc) for the rollout plan.
+const KNOWN_CATEGORIES = new Set([
+  'alignment-io',         // read/write SAM/BAM
+  'alignment-quality',    // CIGAR-derived per-row metrics
+  'alignment-tools',      // wrappers around aligners (minimap2/bowtie2/mafft/sortmerna)
+  'sam-flags',            // SAM flag bit tests
+  'sequence-io',          // read/write FASTA/FASTQ/SFF
+  'sequence-tools',       // DUST masking, paired-end merging, reverse-complement, regexp
+  'ena-io',               // ENA/SRA browser
+  'ncbi-io',              // NCBI fetch
+  'mzml-io',              // mass-spec format readers
+  'mass-spec-analysis',   // formula, massql, peak-pair, mass tables
+  'rype',                 // sequence classification
+  'microbiome',           // woltka, deblur, uchime, cluster_sequences, search_sequences
+  'phylogeny',            // newick, jplace, tree_resolve_placement
+  'intervals',            // compress_intervals, alignment_slice, compute_coverage_depth
+  'pairwise',             // align_pairwise_*
+]);
+
 // Sanity: every type in TYPE_ORDER has a TYPES entry.
 for (const t of TYPE_ORDER) {
   if (!TYPES[t]) throw new Error(`generate: TYPE_ORDER references unknown type '${t}'`);
@@ -87,6 +109,21 @@ const pocFunctions = data.functions
     const category = (primary.categories ?? [])[0] ?? UNCATEGORIZED;
     return { ...fn, primary, category };
   });
+
+// Reject any C++-supplied category not in KNOWN_CATEGORIES. Catches typos
+// at doc-build time before they spread.
+const usedCategories = new Set();
+for (const fn of pocFunctions) {
+  if (fn.category === UNCATEGORIZED) continue;
+  usedCategories.add(fn.category);
+  if (!KNOWN_CATEGORIES.has(fn.category)) {
+    errors.push(`unknown category '${fn.category}' on '${fn.name}'. Add to KNOWN_CATEGORIES in generate-reference.mjs or fix the C++ registration.`);
+  }
+}
+const unusedCategories = [...KNOWN_CATEGORIES].filter((c) => !usedCategories.has(c));
+if (unusedCategories.length) {
+  console.error(`generate: note: KNOWN_CATEGORIES entries with no functions yet: ${unusedCategories.join(', ')}`);
+}
 
 // Bucket by type → category. Drives both the per-function page layout and
 // the sidebar / index pages below — one map, no derived twins.
