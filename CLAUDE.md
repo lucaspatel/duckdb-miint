@@ -88,14 +88,16 @@ When adding a new guard: detect in `run_tests.sh`, add `require-env` to the test
 
 The entry point is `src/miint_extension.cpp` — `LoadInternal()` registers every table function, scalar function, aggregate, and COPY format. That file is the authoritative catalog.
 
-Developer-facing deep dives live under `docs/internals/`:
+Developer-facing deep dives live under `site/src/content/docs/internals/`:
 
-- **[`docs/internals/architecture.md`](docs/internals/architecture.md)** — design patterns (file reading, record abstraction, reference table), code style, testing strategy, cross-cutting impl details (thread safety, headerless SAM, stop-position math, quality scores, compression), and how to add new table/COPY/scalar/aggregate functions.
-- **[`docs/internals/embedded-tools.md`](docs/internals/embedded-tools.md)** — how every external library/tool is embedded: static libraries from source (HTSlib, minimap2, WFA2, vsearch, MAFFT, rype), header-only (kseq++), vcpkg/system (zlib, zstd, expat, HDF5, Catch2), and runtime binaries (bowtie2, Aspera). Platform-specific gotchas and feature flags.
-- **[`docs/internals/reading-tables-views.md`](docs/internals/reading-tables-views.md)** — the separate-connection recipe for reading user-specified tables/views from extension code (avoids the `context.Query()` deadlock). Covers both data reads and schema validation.
-- **[`docs/internals/arrow-zero-copy.md`](docs/internals/arrow-zero-copy.md)** — zero-copy Arrow C Data Interface → DuckDB Vector conversion, with lifetime management and reference implementations.
+- **[`architecture.md`](site/src/content/docs/internals/architecture.md)** — design patterns (file reading, record abstraction, reference table), code style, testing strategy, cross-cutting impl details (thread safety, headerless SAM, stop-position math, quality scores, compression), and how to add new table/COPY/scalar/aggregate functions.
+- **[`embedded-tools.md`](site/src/content/docs/internals/embedded-tools.md)** — how every external library/tool is embedded: static libraries from source (HTSlib, minimap2, WFA2, vsearch, MAFFT, rype), header-only (kseq++), vcpkg/system (zlib, zstd, expat, HDF5, Catch2), and runtime binaries (bowtie2, Aspera). Platform-specific gotchas and feature flags.
+- **[`reading-tables-views.md`](site/src/content/docs/internals/reading-tables-views.md)** — the separate-connection recipe for reading user-specified tables/views from extension code (avoids the `context.Query()` deadlock). Covers both data reads and schema validation.
+- **[`arrow-zero-copy.md`](site/src/content/docs/internals/arrow-zero-copy.md)** — zero-copy Arrow C Data Interface → DuckDB Vector conversion, with lifetime management and reference implementations.
+- **[`per-sample-pattern.md`](site/src/content/docs/internals/per-sample-pattern.md)** — the per-sample table-function helper used by deblur, woltka_ogu, align_mafft, and uchime.
+- **[`testing.md`](site/src/content/docs/internals/testing.md)** / **[`wasm-testing.md`](site/src/content/docs/internals/wasm-testing.md)** — test harness layout and WASM build verification.
 
-User-facing API reference (parameters, return types, examples): `docs/table-functions.md`, `docs/scalar-functions.md`, `docs/copy-formats.md`, `docs/analysis-functions.md`.
+User-facing API reference is auto-generated at docs build time from the C++ catalog into `site/src/content/docs/reference/` (one page per function, grouped by `function_type` and `categories`). Edit the C++ `RegisterDocumented*` registration to change a function's docs — there are no separate prose files to keep in sync.
 
 ## Common Runtime Issues
 

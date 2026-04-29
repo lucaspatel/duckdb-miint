@@ -53,16 +53,21 @@ GROUP BY sample_id;
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Installation & Building](docs/installation.md) | Installing from community extensions, building from source, dependencies |
-| [Table Functions](docs/table-functions.md) | `read_alignments`, `read_fastx`, `read_mzml`, `read_mzxml`, `read_biom`, `align_minimap2`, `align_bowtie2`, `align_mafft`, `detect_chimera_uchime`, `search_sequences_vsearch`, `cluster_sequences_vsearch`, and more |
-| [Mass Spectrometry & MassQL](docs/massql.md) | MassQL query language, `read_mzml`/`read_mzxml`, helper macros, formula functions |
-| [Scalar Functions](docs/scalar-functions.md) | SAM flag functions, sequence identity, query length, query coverage |
-| [RYpe Functions](docs/rype.md) | RYpe sequence classification and minimizer extraction |
-| [Analysis Functions](docs/analysis-functions.md) | Woltka OGU, reverse complement, IUPAC regexp, interval compression, pairwise alignment, `formula()`, `miint_version()` |
-| [COPY Formats](docs/copy-formats.md) | Writing FASTQ, FASTA, SAM, BAM, BIOM, and Newick files |
-| [Testing](docs/testing.md) | SQL logic tests, C++ unit tests, shell tests, test data |
+The full documentation site lives under [`site/`](site/) and is built
+from C++ catalog metadata at every release. Common entry points:
+
+- **Installation & Building** → `site/src/content/docs/getting-started/installation.md`
+- **Function reference** (auto-generated from `duckdb_functions()`) →
+  `site/src/content/docs/reference/`
+  - Table functions, scalar functions, aggregates, COPY formats, macros
+- **Guides** → `site/src/content/docs/guides/`
+  - Mass spectrometry & MassQL, RYpe sequence classification
+- **Internals** → `site/src/content/docs/internals/`
+  - Architecture, embedded tools, table/view reading, Arrow zero-copy,
+    per-sample pattern, building the docs, testing, WASM testing
+
+To browse locally, see
+[`site/src/content/docs/internals/building-the-docs.md`](site/src/content/docs/internals/building-the-docs.md).
 
 ## Installing
 
@@ -71,7 +76,8 @@ INSTALL miint FROM community;
 LOAD miint;
 ```
 
-See [Installation & Building](docs/installation.md) for building from source.
+See `site/src/content/docs/getting-started/installation.md` for
+building from source.
 
 ## Python CLI
 
@@ -105,7 +111,7 @@ make test
 ./build/release/extension/miint/tests
 ```
 
-See [Testing](docs/testing.md) for details.
+See `site/src/content/docs/internals/testing.md` for details.
 
 ---
 
