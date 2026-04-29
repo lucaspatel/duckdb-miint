@@ -1,4 +1,5 @@
 #include "rype_classify.hpp"
+#include "documented_function.hpp"
 #include "rype_common.hpp"
 #include "duckdb/common/arrow/result_arrow_wrapper.hpp"
 #include "duckdb/common/helper.hpp"
@@ -6,6 +7,7 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
 
@@ -389,7 +391,54 @@ TableFunction RypeClassifyTableFunction::GetFunction() {
 // Register
 // ============================================================================
 void RypeClassifyTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Classify sequences against a [RYpe](https://github.com/biocore/rype)
+index, returning bucket assignments with confidence scores. RYpe uses
+RY-space (purine/pyrimidine) minimizer encoding for robust matching;
+indexes (`.ryxdi`) are Parquet-backed inverted indexes built from
+reference sequences.
+
+`sequence_table` must have an identifier column (default `read_id`),
+a `sequence1` column, and optionally a `sequence2` column for
+paired-end input.
+
+A sequence may match multiple buckets — one row per match above
+`threshold`. Sequences with no matches above threshold produce zero
+rows.
+
+### Optional named parameters
+
+- `id_column` (VARCHAR, default `'read_id'`) — identifier column name.
+- `threshold` (DOUBLE, default `0.1`) — minimum score (0.0–1.0).
+- `negative_index` (VARCHAR) — path to a second `.ryxdi` used as a
+  negative filter (e.g., to remove host hits).
+
+### Output schema
+
+`read_id` (VARCHAR), `bucket_id` (UINTEGER), `bucket_name` (VARCHAR),
+`score` (DOUBLE).
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"index_path", "sequence_table"},
+	    {
+	        "-- Classify reads against a single index\n"
+	        "CREATE TABLE seqs AS SELECT * FROM read_fastx('reads.fastq');\n"
+	        "SELECT * FROM rype_classify('my_index.ryxdi', 'seqs');",
+	        "-- Stricter threshold\n"
+	        "SELECT * FROM rype_classify('my_index.ryxdi', 'seqs', threshold := 0.5);",
+	        "-- Hits per bucket, sorted\n"
+	        "SELECT bucket_name, COUNT(*) AS hits\n"
+	        "FROM rype_classify('my_index.ryxdi', 'seqs')\n"
+	        "GROUP BY bucket_name ORDER BY hits DESC;",
+	        "-- Subtract host hits via a negative index\n"
+	        "SELECT * FROM rype_classify('microbe.ryxdi', 'seqs',\n"
+	        "                            negative_index := 'host.ryxdi');",
+	        "-- Paired-end input\n"
+	        "CREATE TABLE paired AS SELECT * FROM read_fastx('R1.fastq', sequence2='R2.fastq');\n"
+	        "SELECT * FROM rype_classify('my_index.ryxdi', 'paired');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"rype"});
 }
 
 } // namespace duckdb

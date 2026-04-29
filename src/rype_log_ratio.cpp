@@ -1,4 +1,5 @@
 #include "rype_log_ratio.hpp"
+#include "documented_function.hpp"
 #include "rype_common.hpp"
 #include "duckdb/common/arrow/result_arrow_wrapper.hpp"
 #include "duckdb/common/helper.hpp"
@@ -6,6 +7,7 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
 
@@ -361,7 +363,65 @@ TableFunction RypeLogRatioTableFunction::GetFunction() {
 // Register
 // ============================================================================
 void RypeLogRatioTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Compute the log-ratio of classification scores between two
+single-bucket [RYpe](https://github.com/biocore/rype) indices. For
+each input sequence, returns
+`log10(numerator_score / denominator_score)` — positive values
+indicate the sequence matches the numerator more strongly, negative
+values the denominator. Symmetric: swapping numerator and
+denominator negates the log-ratio.
+
+Both `numerator_path` and `denominator_path` must point to
+**single-bucket** indices; multi-bucket indices are rejected at bind.
+
+Returns exactly one row per input sequence.
+
+`sequence_table` must have an identifier column (default `read_id`),
+`sequence1`, and optionally `sequence2` for paired-end input.
+
+### Optional named parameters
+
+- `id_column` (VARCHAR, default `'read_id'`).
+- `skip_threshold` (DOUBLE, default `0.5`) — fast-path: reads with
+  numerator score `>=` this skip denominator classification entirely
+  and emit `+inf` immediately. Set to `0` or negative to disable the
+  fast-path.
+
+### Output schema
+
+`read_id` (VARCHAR), `log_ratio` (DOUBLE; `+inf` numerator-only,
+`-inf` denominator-only, `NaN` when neither matches), `fast_path`
+(INTEGER; `1` if fast-path was taken, `0` otherwise).
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"numerator_path", "denominator_path", "sequence_table"},
+	    {
+	        "-- Compute log-ratio between two single-bucket indices\n"
+	        "CREATE TABLE seqs AS SELECT * FROM read_fastx('reads.fastq');\n"
+	        "SELECT * FROM rype_log_ratio('host.ryxdi', 'microbe.ryxdi', 'seqs');",
+	        "-- Disable fast-path for exact classification against both indices\n"
+	        "SELECT * FROM rype_log_ratio('host.ryxdi', 'microbe.ryxdi', 'seqs',\n"
+	        "                             skip_threshold := 0.0);",
+	        "-- Strong-numerator hits, sorted\n"
+	        "SELECT read_id, log_ratio\n"
+	        "FROM rype_log_ratio('host.ryxdi', 'microbe.ryxdi', 'seqs',\n"
+	        "                    skip_threshold := 0.0)\n"
+	        "WHERE log_ratio > 1.0\n"
+	        "ORDER BY log_ratio DESC;",
+	        "-- Categorical classification from log-ratio sign\n"
+	        "SELECT read_id,\n"
+	        "       CASE WHEN isinf(log_ratio) AND log_ratio > 0 THEN 'host_only'\n"
+	        "            WHEN isinf(log_ratio) AND log_ratio < 0 THEN 'microbe_only'\n"
+	        "            WHEN isnan(log_ratio) THEN 'unclassified'\n"
+	        "            WHEN log_ratio > 0 THEN 'host'\n"
+	        "            WHEN log_ratio < 0 THEN 'microbe'\n"
+	        "            ELSE 'ambiguous' END AS classification\n"
+	        "FROM rype_log_ratio('host.ryxdi', 'microbe.ryxdi', 'seqs',\n"
+	        "                    skip_threshold := 0.0);",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"rype"});
 }
 
 } // namespace duckdb

@@ -1,10 +1,12 @@
 #include "rype_extract.hpp"
+#include "documented_function.hpp"
 #include "rype_common.hpp"
 #include "duckdb/common/arrow/result_arrow_wrapper.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
 
@@ -300,7 +302,50 @@ TableFunction RypeExtractMinimizerSetTableFunction::GetFunction() {
 }
 
 void RypeExtractMinimizerSetTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Extract deduplicated minimizer hash sets (forward + reverse-complement)
+from sequences in a DuckDB table or view. Uses RYpe's RY-space
+encoding (purine/pyrimidine, 1 bit per base, fits in `uint64`).
+
+Returns one row per input sequence. Sequences shorter than `k` produce
+empty lists. Hash sets are sorted and deduplicated (set semantics).
+
+### Inputs
+
+- `sequence_table` (VARCHAR) — table/view with identifier column +
+  `sequence1`.
+- `k` (BIGINT) — k-mer size. Must be `16`, `32`, or `64`.
+- `w` (BIGINT) — window size for minimizer selection. Must be `> 0`.
+
+### Optional named parameters
+
+- `salt` (UBIGINT, default `6148914691236517205`) — hash salt for
+  reproducible but varied minimizer selection.
+- `id_column` (VARCHAR, default `'read_id'`) — identifier column name.
+
+### Output schema
+
+`read_id`, `fwd_set` (UBIGINT[]), `rc_set` (UBIGINT[]).
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"sequence_table", "k", "w"},
+	    {
+	        "-- Extract minimizer sets at k=32, w=10\n"
+	        "CREATE TABLE seqs AS SELECT * FROM read_fastx('reads.fastq');\n"
+	        "SELECT * FROM rype_extract_minimizer_set('seqs', 32, 10);",
+	        "-- Count minimizers per read\n"
+	        "SELECT read_id, len(fwd_set) AS num_minimizers\n"
+	        "FROM rype_extract_minimizer_set('seqs', 16, 5);",
+	        "-- Pairwise minimizer overlap\n"
+	        "WITH mins AS (\n"
+	        "  SELECT read_id, fwd_set FROM rype_extract_minimizer_set('seqs', 32, 10)\n"
+	        ")\n"
+	        "SELECT a.read_id, b.read_id,\n"
+	        "       len(list_intersect(a.fwd_set, b.fwd_set)) AS shared_minimizers\n"
+	        "FROM mins a, mins b WHERE a.read_id < b.read_id;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"rype"});
 }
 
 // ============================================================================
@@ -383,7 +428,52 @@ TableFunction RypeExtractStrandMinimizersTableFunction::GetFunction() {
 }
 
 void RypeExtractStrandMinimizersTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Extract minimizer hashes with their positions for both forward and
+reverse-complement strands. Unlike
+[`rype_extract_minimizer_set`](../rype_extract_minimizer_set/), this
+preserves positional information and may contain duplicate hashes at
+different positions.
+
+Hash and position arrays always have the same length per strand
+(`len(fwd_hashes) = len(fwd_positions)`). Positions are 0-based
+offsets into the input sequence.
+
+### Inputs
+
+- `sequence_table` (VARCHAR) — table/view with identifier column +
+  `sequence1`.
+- `k` (BIGINT) — k-mer size. Must be `16`, `32`, or `64`.
+- `w` (BIGINT) — window size. Must be `> 0`.
+
+### Optional named parameters
+
+- `salt` (UBIGINT, default `6148914691236517205`) — hash salt.
+- `id_column` (VARCHAR, default `'read_id'`) — identifier column name.
+
+### Output schema
+
+`read_id`, `fwd_hashes` (UBIGINT[]), `fwd_positions` (UBIGINT[]),
+`rc_hashes` (UBIGINT[]), `rc_positions` (UBIGINT[]).
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"sequence_table", "k", "w"},
+	    {
+	        "-- Extract strand minimizers with positions\n"
+	        "CREATE TABLE seqs AS SELECT * FROM read_fastx('reads.fastq');\n"
+	        "SELECT * FROM rype_extract_strand_minimizers('seqs', 32, 10);",
+	        "-- Verify hash/position arrays are aligned per strand\n"
+	        "SELECT read_id,\n"
+	        "       len(fwd_hashes) = len(fwd_positions) AS fwd_aligned,\n"
+	        "       len(rc_hashes) = len(rc_positions) AS rc_aligned\n"
+	        "FROM rype_extract_strand_minimizers('seqs', 32, 10);",
+	        "-- Walk minimizer positions along each sequence\n"
+	        "SELECT read_id, unnest(fwd_hashes) AS hash, unnest(fwd_positions) AS pos\n"
+	        "FROM rype_extract_strand_minimizers('seqs', 32, 10)\n"
+	        "ORDER BY read_id, pos;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"rype"});
 }
 
 } // namespace duckdb
