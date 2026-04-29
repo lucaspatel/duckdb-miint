@@ -19,3 +19,7 @@ scripts/test_wasm_harness.js
 scripts/test_wasm_harness.wasm
 scripts/test_wasm_harness.data
 
+# Doctest .test files generated from miint_doctest_examples() by
+# site/scripts/generate-doctests.mjs (called from `npm run prebuild`).
+test/sql/doctests/
+

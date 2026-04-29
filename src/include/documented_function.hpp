@@ -32,10 +32,33 @@
 // members in every TU that includes this file.
 namespace duckdb {
 
+// Doctest registry: each Register* call may attach zero or more
+// self-contained executable SQL queries (no external fixtures, runs in an
+// empty DuckDB session). The Catch2 test in test/cpp/test_DocumentedExamples.cpp
+// iterates this registry and asserts every entry runs without error, so
+// example drift is caught at test time.
+//
+// The illustrative `examples` parameter (which can reference fixture files
+// like 'alignments.bam') stays in FunctionDescription and renders in the
+// docs but is NOT executed by the test suite.
+struct DoctestEntry {
+	std::string function_name;
+	std::string sql;
+};
+const std::vector<DoctestEntry> &GetDoctestRegistry();
+
+// Register the `miint_doctest_examples()` table macro that exposes the
+// doctest registry to SQL. Call this AFTER every RegisterDocumented* call
+// in LoadInternal, so the registry is fully populated when the macro is
+// built. Used by site/scripts/generate-doctests.mjs to emit one
+// sqllogictest .test file per documented executable example.
+void RegisterDoctestMacro(ExtensionLoader &loader);
+
 void RegisterDocumentedScalar(ExtensionLoader &loader, ScalarFunction function, const std::string &description,
                               std::initializer_list<const char *> parameter_names,
                               const std::vector<std::string> &examples, const std::string &alias_of = "",
-                              std::initializer_list<const char *> categories = {});
+                              std::initializer_list<const char *> categories = {},
+                              const std::vector<std::string> &executable_examples = {});
 
 // Per-overload metadata for ScalarFunctionSet registrations. Pairs each
 // overload's positional parameter names with their LogicalTypeId. Using
@@ -52,7 +75,8 @@ struct DocumentedOverload {
 void RegisterDocumentedScalarSet(ExtensionLoader &loader, ScalarFunctionSet set, const std::string &description,
                                  std::initializer_list<DocumentedOverload> overloads,
                                  const std::vector<std::string> &examples, const std::string &alias_of = "",
-                                 std::initializer_list<const char *> categories = {});
+                                 std::initializer_list<const char *> categories = {},
+                                 const std::vector<std::string> &executable_examples = {});
 
 // Lower-level ScalarFunctionSet registration for when overloads need
 // genuinely different descriptions or examples. Caller builds each
@@ -73,6 +97,7 @@ void RegisterDocumentedScalarSet(ExtensionLoader &loader, ScalarFunctionSet set,
 void RegisterDocumentedTableFunction(ExtensionLoader &loader, TableFunction function, const std::string &description,
                                      std::initializer_list<const char *> positional_parameter_names,
                                      const std::vector<std::string> &examples, const std::string &alias_of = "",
-                                     std::initializer_list<const char *> categories = {});
+                                     std::initializer_list<const char *> categories = {},
+                                     const std::vector<std::string> &executable_examples = {});
 
 } // namespace duckdb

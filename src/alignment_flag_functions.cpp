@@ -98,8 +98,12 @@ void RegisterFlag(ExtensionLoader &loader, const std::string &name, scalar_funct
 	const std::string single_example = "SELECT read_id, flags, " + name +
 	                                   "(flags) AS flag\n"
 	                                   "FROM read_alignments('alignments.sam') LIMIT 10;";
+	// Doctest: self-contained one-liner against a literal flag value
+	// (99 = paired + proper_pair + mate_reverse + read1).
+	const std::string doctest = "SELECT " + name + "(99::USMALLINT);";
 	RegisterDocumentedScalar(loader, ScalarFunction(name, {LogicalType::USMALLINT}, LogicalType::BOOLEAN, fn),
-	                         description, {"flags"}, {single_example, filter_example}, alias_of, {"sam-flags"});
+	                         description, {"flags"}, {single_example, filter_example}, alias_of, {"sam-flags"},
+	                         {doctest});
 }
 
 } // namespace

@@ -30,6 +30,7 @@
 #include <read_ena_attributes.hpp>
 #include <read_ena_searchable_fields.hpp>
 #include <read_ena_sequences.hpp>
+#include <documented_function.hpp>
 #include <miint_log.hpp>
 #include <miint_macros.hpp>
 #include "duckdb/main/extension_helper.hpp"
@@ -280,6 +281,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	SearchSequencesTableFunction::Register(loader);
 	ClusterSequencesTableFunction::Register(loader);
 #endif
+
+	// Must run AFTER every RegisterDocumented*() call so the doctest
+	// registry is fully populated when the macro is built.
+	RegisterDoctestMacro(loader);
 }
 
 void MiintExtension::Load(ExtensionLoader &loader) {

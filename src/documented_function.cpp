@@ -1,5 +1,7 @@
 #include "documented_function.hpp"
 
+#include "duckdb.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
@@ -8,6 +10,22 @@
 namespace duckdb {
 
 namespace {
+
+// In-process registry of (function_name, executable SQL) pairs collected
+// from RegisterDocumented*() calls. Read by GetDoctestRegistry() (used by
+// the doctest test harness) and by the miint_doctest_examples() table
+// function (used by the docs build's test-file generator).
+std::vector<DoctestEntry> &MutableRegistry() {
+	static std::vector<DoctestEntry> registry;
+	return registry;
+}
+
+void AppendDoctests(const std::string &function_name, const std::vector<std::string> &executable_examples) {
+	auto &registry = MutableRegistry();
+	for (const auto &sql : executable_examples) {
+		registry.push_back({function_name, sql});
+	}
+}
 
 // Build a FunctionDescription from the user-supplied prose and the function's
 // own argument types. Shared by the scalar and table-function helpers below;
@@ -42,18 +60,27 @@ void RegisterWithInfo(ExtensionLoader &loader, InfoT &&info, FunctionDescription
 
 } // namespace
 
+const std::vector<DoctestEntry> &GetDoctestRegistry() {
+	return MutableRegistry();
+}
+
 void RegisterDocumentedScalar(ExtensionLoader &loader, ScalarFunction function, const std::string &description,
                               std::initializer_list<const char *> parameter_names,
                               const std::vector<std::string> &examples, const std::string &alias_of,
-                              std::initializer_list<const char *> categories) {
+                              std::initializer_list<const char *> categories,
+                              const std::vector<std::string> &executable_examples) {
+	const std::string function_name = function.name;
 	auto fd = BuildDescription(function.arguments, description, parameter_names, examples, categories);
 	RegisterWithInfo(loader, CreateScalarFunctionInfo(std::move(function)), std::move(fd), alias_of);
+	AppendDoctests(function_name, executable_examples);
 }
 
 void RegisterDocumentedScalarSet(ExtensionLoader &loader, ScalarFunctionSet set, const std::string &description,
                                  std::initializer_list<DocumentedOverload> overloads,
                                  const std::vector<std::string> &examples, const std::string &alias_of,
-                                 std::initializer_list<const char *> categories) {
+                                 std::initializer_list<const char *> categories,
+                                 const std::vector<std::string> &executable_examples) {
+	const std::string function_name = set.name;
 	CreateScalarFunctionInfo info(std::move(set));
 	if (!alias_of.empty()) {
 		info.alias_of = alias_of;
@@ -63,10 +90,11 @@ void RegisterDocumentedScalarSet(ExtensionLoader &loader, ScalarFunctionSet set,
 		for (auto id : ov.parameter_types) {
 			types.emplace_back(id);
 		}
-		info.descriptions.push_back(
-		    BuildDescription(std::move(types), description, ov.parameter_names, examples, categories));
+		info.descriptions.push_back(BuildDescription(std::move(types), description, ov.parameter_names, examples,
+		                                             categories));
 	}
 	loader.RegisterFunction(std::move(info));
+	AppendDoctests(function_name, executable_examples);
 }
 
 void RegisterDocumentedScalarSet(ExtensionLoader &loader, ScalarFunctionSet set,
@@ -85,9 +113,56 @@ void RegisterDocumentedScalarSet(ExtensionLoader &loader, ScalarFunctionSet set,
 void RegisterDocumentedTableFunction(ExtensionLoader &loader, TableFunction function, const std::string &description,
                                      std::initializer_list<const char *> positional_parameter_names,
                                      const std::vector<std::string> &examples, const std::string &alias_of,
-                                     std::initializer_list<const char *> categories) {
+                                     std::initializer_list<const char *> categories,
+                                     const std::vector<std::string> &executable_examples) {
+	const std::string function_name = function.name;
 	auto fd = BuildDescription(function.arguments, description, positional_parameter_names, examples, categories);
 	RegisterWithInfo(loader, CreateTableFunctionInfo(std::move(function)), std::move(fd), alias_of);
+	AppendDoctests(function_name, executable_examples);
+}
+
+namespace {
+
+// SQL string-literal escape: wrap in single quotes, double any embedded
+// single quotes. Intentionally minimal — input comes from C++ source code
+// at compile time, not from user input.
+std::string SqlQuote(const std::string &s) {
+	std::string out;
+	out.reserve(s.size() + 2);
+	out += '\'';
+	for (char c : s) {
+		if (c == '\'') {
+			out += "''";
+		} else {
+			out += c;
+		}
+	}
+	out += '\'';
+	return out;
+}
+
+} // namespace
+
+void RegisterDoctestMacro(ExtensionLoader &loader) {
+	const auto &registry = GetDoctestRegistry();
+	std::string sql = "CREATE OR REPLACE MACRO miint_doctest_examples() AS TABLE ";
+	if (registry.empty()) {
+		sql += "SELECT NULL::VARCHAR AS function_name, NULL::VARCHAR AS sql WHERE FALSE;";
+	} else {
+		sql += "SELECT * FROM (VALUES ";
+		for (size_t i = 0; i < registry.size(); ++i) {
+			if (i > 0) {
+				sql += ", ";
+			}
+			sql += "(" + SqlQuote(registry[i].function_name) + ", " + SqlQuote(registry[i].sql) + ")";
+		}
+		sql += ") AS t(function_name, sql);";
+	}
+	Connection con(loader.GetDatabaseInstance());
+	auto result = con.Query(sql);
+	if (result->HasError()) {
+		throw InternalException("Failed to register miint_doctest_examples macro: %s", result->GetError());
+	}
 }
 
 } // namespace duckdb

@@ -62,18 +62,28 @@ mirrored into a signed channel this can be dropped.
 ## Steps
 
 ```sh
-# (only if you want local-build mode — skip if you're fine with released)
-bash build.sh
-
 # Install site dependencies (once per package-lock.json change)
 cd site && npm install
+cd ..
 
-# Generate reference + sidebar manifest. Picks local build if one exists,
-# else the released artifact. No env vars needed for the common case.
-npm run prebuild
+# Build extension + regenerate site + run tests + format-check, in order.
+# Use --no-build to skip step 1 when iterating on JS/markdown only.
+bash scripts/docs-workflow.sh
+```
 
-# Static build to site/dist/, or dev server with live reload.
-npm run build         # or: npm run dev
+The workflow script is the standardized entry point: it builds the
+extension, regenerates the docs (introspect + reference + doctests),
+builds the static site, runs the SQL + C++ test suite (including
+auto-generated doctests), and runs format-check — failing fast if
+anything is off.
+
+### Manual (per-step) form
+
+```sh
+bash build.sh                       # build the extension
+cd site && npm run prebuild         # introspect + reference + doctests
+npm run build                       # static build to site/dist/
+npm run dev                         # OR dev server with live reload
 ```
 
 `npm run prebuild` runs two scripts in sequence:
@@ -157,6 +167,32 @@ that). `intro` fragments slot in **before** the auto-generated table;
 The split keeps the generator authoritative for what changes (function
 tables, links, counts) while letting humans own what doesn't (concepts,
 cross-references, recipes).
+
+## Doctest pipeline
+
+`executable_examples` on a `RegisterDocumented*()` call are self-contained
+SQL one-liners that must run in an empty DuckDB session (no fixture
+files, no pre-existing tables). The build pipeline turns them into
+sqllogictest cases automatically:
+
+1. The C++ helper appends each `(function_name, sql)` pair to an
+   in-process registry (`GetDoctestRegistry()` in
+   `src/documented_function.cpp`).
+2. `LoadInternal()` in `src/miint_extension.cpp` calls
+   `RegisterDoctestMacro(loader)` after every other Register* call,
+   which wraps the registry as a `miint_doctest_examples()` table macro
+   in the catalog.
+3. `npm run prebuild` calls `site/scripts/generate-doctests.mjs`, which
+   queries the macro and writes one
+   `test/sql/doctests/doctest_<function>.test` file per documented
+   function. Each is a sqllogictest `statement ok` block.
+4. `bash run_tests.sh` picks up `test/sql/doctests/*.test`
+   automatically alongside the hand-authored tests; failures are
+   reported with the function name in the path.
+
+Generated `.test` files are gitignored — `npm run prebuild` regenerates
+them, and `bash run_tests.sh` should be run after a rebuild to pick up
+fresh entries.
 
 ## What the generator does NOT (yet) read from the catalog
 

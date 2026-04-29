@@ -5,8 +5,9 @@
   "scripts": {
     "introspect": "node scripts/introspect-functions.mjs",
     "generate": "node scripts/generate-reference.mjs",
-    "prebuild": "npm run introspect && npm run generate",
-    "predev": "npm run introspect && npm run generate",
+    "doctests": "node scripts/generate-doctests.mjs",
+    "prebuild": "npm run introspect && npm run generate && npm run doctests",
+    "predev": "npm run introspect && npm run generate && npm run doctests",
     "dev": "astro dev",
     "start": "astro dev",
     "build": "astro build",
