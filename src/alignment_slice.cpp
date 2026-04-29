@@ -1,5 +1,6 @@
 #include "alignment_slice.hpp"
 #include "catalog_utils.hpp"
+#include "documented_function.hpp"
 #include "AlignmentSlicer.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -10,6 +11,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 
@@ -318,7 +320,49 @@ void AlignmentSliceTableFunction::Register(ExtensionLoader &loader) {
 	                        Execute, Bind, InitGlobal);
 	tf.named_parameters["include_deletions"] = LogicalType::BOOLEAN;
 	tf.order_preservation_type = OrderPreservationType::NO_ORDER;
-	loader.RegisterFunction(tf);
+
+	static const std::string description = R"DOC(
+Slice alignment rows from a DuckDB table or view to a genomic region.
+Each alignment is trimmed to `[start, stop)` (1-based, half-open),
+with trimmed portions represented as hard clips (`H`) in the output
+CIGAR. Reads that don't overlap are dropped.
+
+The input table must have `cigar` (VARCHAR), `position` (BIGINT) and
+`stop_position` (BIGINT). All other recognized alignment columns
+(from the [`read_alignments`](../read_alignments/) schema) are
+preserved when present. Tag columns (`tag_as`..`tag_sa`) and
+`template_length` are NULLed when trimming actually changes the row,
+because the original values no longer apply to the clipped CIGAR.
+
+If the input has a `reference` column, all rows must share the same
+reference (single-region slicing).
+
+### Named parameters
+
+- `include_deletions` (BOOLEAN, default `false`) — when `true`, treat
+  deletion (`D`) operations as overlap evidence. By default, reads
+  whose only overlap with the region is via deletions are excluded.
+
+The function reads the input via a separate connection, so
+uncommitted changes in the current transaction may not be visible.
+)DOC";
+
+	RegisterDocumentedTableFunction(loader, std::move(tf), description, {"table_name", "start", "stop"},
+	                                {
+	                                    "-- Filter to one reference, then slice to a region\n"
+	                                    "CREATE VIEW chr1_alns AS\n"
+	                                    "  SELECT * FROM read_alignments('sample.bam')\n"
+	                                    "  WHERE reference = 'chr1';\n"
+	                                    "SELECT * FROM alignment_slice('chr1_alns', 1000, 2000);",
+	                                    "-- Include reads that overlap only via deletions\n"
+	                                    "SELECT * FROM alignment_slice('chr1_alns', 1000, 2000,\n"
+	                                    "                              include_deletions := true);",
+	                                    "-- Compose with compute_coverage_depth on the sliced output\n"
+	                                    "SELECT compute_coverage_depth(position, stop_position, cigar,\n"
+	                                    "                              1000, 'exclude_deletions')\n"
+	                                    "FROM alignment_slice('chr1_alns', 1000, 2000);",
+	                                },
+	                                /*alias_of=*/"", /*categories=*/{"intervals"});
 }
 
 } // namespace duckdb

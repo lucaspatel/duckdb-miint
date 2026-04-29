@@ -1,10 +1,12 @@
 #include "search_sequences.hpp"
+#include "documented_function.hpp"
 #include "table_function_common.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/vector_size.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include <algorithm>
 
@@ -205,8 +207,55 @@ TableFunction SearchSequencesTableFunction::GetFunction() {
 }
 
 void SearchSequencesTableFunction::Register(ExtensionLoader &loader) {
-	auto tf = GetFunction();
-	loader.RegisterFunction(tf);
+	static const std::string description = R"DOC(
+Global pairwise sequence search, powered by the
+[vsearch](https://github.com/torognes/vsearch) library
+(Rognes et al. 2016, *PeerJ* 4:e2584). For each query, finds the best
+matches in a reference database using SIMD-optimized
+Needleman-Wunsch alignment with k-mer candidate filtering.
+
+Both `query_table` and the table referenced by `db` must have
+`read_id` (VARCHAR) and `sequence1` (VARCHAR) columns.
+
+### Required named parameters
+
+- `db` (VARCHAR) — table/view name with reference sequences.
+- `id` (DOUBLE) — minimum identity (0.0–1.0). No silent default.
+
+### Optional named parameters
+
+- `maxaccepts` (INTEGER, default `1`) — max accepted hits per query.
+- `maxrejects` (INTEGER, default `32`) — max rejected targets before
+  abandoning the query.
+
+### Output schema
+
+`query_id`, `target_id`, `identity`, `matches`, `mismatches`, `gaps`,
+`alignment_length`, `query_length`, `target_length`, `accepted`. Each
+query produces 0..`maxaccepts` rows. Both accepted and weak/near-miss
+hits are emitted; filter on `accepted` to drop near-misses.
+
+Plus-strand only (no reverse-complement search). Multi-threaded (up to
+8 threads). The reference database is materialized in memory at init.
+RNA `U` is auto-converted to DNA `T`.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"query_table"},
+	    {
+	        "-- Search at 97% identity\n"
+	        "CREATE TABLE refs AS SELECT read_id, sequence1 FROM read_fastx('database.fasta');\n"
+	        "CREATE TABLE queries AS SELECT read_id, sequence1 FROM read_fastx('queries.fasta');\n"
+	        "SELECT * FROM search_sequences_vsearch('queries', db := 'refs', id := 0.97);",
+	        "-- Top-3 hits per query at 90%\n"
+	        "SELECT * FROM search_sequences_vsearch('queries', db := 'refs',\n"
+	        "                                       id := 0.90, maxaccepts := 3);",
+	        "-- Count queries with at least one accepted hit\n"
+	        "SELECT count(DISTINCT query_id)\n"
+	        "FROM search_sequences_vsearch('queries', db := 'refs', id := 0.97)\n"
+	        "WHERE accepted;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"microbiome"});
 }
 
 } // namespace duckdb

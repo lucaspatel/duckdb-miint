@@ -1,8 +1,10 @@
 #include "woltka_ogu_function.hpp"
 
+#include "documented_function.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "per_sample_table_function.hpp"
 
 namespace duckdb {
@@ -225,7 +227,74 @@ void WoltkaOguFunction::Register(ExtensionLoader &loader) {
 	                 WoltkaOguInitGlobal, WoltkaOguInitLocal);
 	fn.named_parameters["sample_id"] = LogicalType::VARCHAR;
 	fn.order_preservation_type = OrderPreservationType::NO_ORDER;
-	loader.RegisterFunction(fn);
+
+	static const std::string description = R"DOC(
+Compute [Woltka](https://github.com/qiyunzhu/woltka) OGU
+(Operational Genomic Unit) counts over SAM-like alignment data.
+Implements Woltka's classification: assigns reads to taxonomic units
+while fractionally distributing multi-mapped reads.
+
+Each mapping receives weight `1/N` where `N` is the number of unique
+references the read maps to within the same orientation. Read
+orientation (forward/reverse) is computed from
+[`alignment_is_read1(flags)`](../../scalar-functions/sam-flags/alignment_is_read1/);
+paired-end reads are handled automatically.
+
+### Inputs
+
+- `relation` (VARCHAR) — table/view of SAM-like alignment data
+  (resolvable catalog name; pass as a string literal). Must have the
+  column named by `sequence_id_field`, plus `reference` (VARCHAR) and
+  `flags` (USMALLINT).
+- `sequence_id_field` (VARCHAR) — column with read/sequence
+  identifiers. Typically `read_id`; a numeric index column hashes
+  faster on large datasets.
+
+### Optional named parameters
+
+- `sample_id` (VARCHAR) — column with sample identifiers. When set,
+  the aggregation runs in parallel across distinct sample values
+  (one DuckDB query per sample, on a dedicated per-thread connection,
+  so memory is bounded to a single sample's footprint). The sample
+  column is prepended to the output. NULL sample values are rejected
+  at bind. **Correctness assumption:** read IDs are unique across
+  samples.
+
+### Output schema
+
+- Without `sample_id`: `(feature_id VARCHAR, value DOUBLE)`.
+- With `sample_id`: `(<sample_id_column> <its_type>, feature_id, value)`.
+
+Output order is non-deterministic when `sample_id` is set (parallel
+per-sample execution); add `ORDER BY` for stable output.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, std::move(fn), description, {"relation", "sequence_id_field"},
+	    {
+	        "-- Global aggregation\n"
+	        "SELECT * FROM woltka_ogu('my_alignments', 'read_id');",
+	        "-- Per-sample aggregation, parallel across samples\n"
+	        "SELECT * FROM woltka_ogu('my_alignments', 'read_id',\n"
+	        "                         sample_id := 'sample_id');",
+	        "-- Filter to high-quality primary alignments via a view, then classify\n"
+	        "CREATE OR REPLACE VIEW primary_alignments AS\n"
+	        "  SELECT * FROM read_alignments('alignments.bam')\n"
+	        "  WHERE alignment_is_primary(flags) AND mapq >= 20;\n"
+	        "SELECT * FROM woltka_ogu('primary_alignments', 'read_id');",
+	        "-- Multi-sample: union sources under a sample_id column\n"
+	        "CREATE OR REPLACE VIEW all_samples AS\n"
+	        "  SELECT *, 'sample1' AS sample_id FROM read_alignments('sample1.bam')\n"
+	        "  UNION ALL\n"
+	        "  SELECT *, 'sample2' AS sample_id FROM read_alignments('sample2.bam');\n"
+	        "SELECT * FROM woltka_ogu('all_samples', 'read_id', sample_id := 'sample_id')\n"
+	        "ORDER BY sample_id, feature_id;",
+	        "-- Export per-sample OGU counts to BIOM\n"
+	        "COPY (\n"
+	        "  SELECT * FROM woltka_ogu('my_alignments', 'read_id', sample_id := 'sample_id')\n"
+	        ") TO 'ogu_table.biom' (FORMAT BIOM, COMPRESSION 'gzip');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"microbiome"});
 }
 
 } // namespace duckdb

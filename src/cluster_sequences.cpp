@@ -1,8 +1,10 @@
 #include "cluster_sequences.hpp"
+#include "documented_function.hpp"
 #include "sequence_table_reader.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/vector_size.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 #include <algorithm>
 
@@ -160,8 +162,67 @@ TableFunction ClusterSequencesTableFunction::GetFunction() {
 }
 
 void ClusterSequencesTableFunction::Register(ExtensionLoader &loader) {
-	auto tf = GetFunction();
-	loader.RegisterFunction(tf);
+	static const std::string description = R"DOC(
+Greedy sequence clustering, powered by the
+[vsearch](https://github.com/torognes/vsearch) library
+(Rognes et al. 2016, *PeerJ* 4:e2584). Each input row is compared
+against existing cluster centroids in input order — it joins the
+best-matching cluster (above the identity threshold) or becomes a new
+centroid.
+
+**Sort order is the caller's responsibility.** For
+`vsearch --cluster_fast` semantics, sort by length descending. For
+`vsearch --cluster_size` (most-abundant first), sort by abundance
+descending.
+
+The input table must have `read_id` (VARCHAR) and `sequence1`
+(VARCHAR) columns.
+
+### Required named parameters
+
+- `id` (DOUBLE) — minimum identity (0.0–1.0). No silent default.
+
+### Optional named parameters
+
+- `strand` (VARCHAR, default `'plus'`) — `'plus'` for plus-strand
+  only, `'both'` to also search reverse complements.
+
+### Output schema
+
+`read_id`, `is_centroid` (BOOLEAN), `cluster_id` (INTEGER, 0-based),
+`centroid_id` (VARCHAR), `identity` (DOUBLE; `100.0` for centroids),
+`cigar` (VARCHAR; empty for centroids), `cigar_truncated`
+(BOOLEAN; `true` if CIGAR was truncated past 4096 chars).
+
+Single-threaded by construction (each new centroid must be indexed
+before processing the next sequence). RNA `U` is auto-converted to
+DNA `T`. Materializes all results before returning.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"input_table"},
+	    {
+	        "-- cluster_fast equivalent: longest first\n"
+	        "CREATE TABLE sorted_seqs AS\n"
+	        "  SELECT * FROM read_fastx('sequences.fasta')\n"
+	        "  ORDER BY length(sequence1) DESC;\n"
+	        "SELECT * FROM cluster_sequences_vsearch('sorted_seqs', id := 0.97);",
+	        "-- cluster_size equivalent: by abundance\n"
+	        "CREATE TABLE by_abundance AS\n"
+	        "  SELECT read_id, sequence1, count(*) AS size\n"
+	        "  FROM read_fastx('amplicons.fasta')\n"
+	        "  GROUP BY read_id, sequence1\n"
+	        "  ORDER BY size DESC;\n"
+	        "SELECT * FROM cluster_sequences_vsearch('by_abundance', id := 0.97);",
+	        "-- Count clusters\n"
+	        "SELECT count(*) FROM cluster_sequences_vsearch('sorted_seqs', id := 0.97)\n"
+	        "WHERE is_centroid;",
+	        "-- Cluster sizes, sorted\n"
+	        "SELECT centroid_id, count(*) AS size\n"
+	        "FROM cluster_sequences_vsearch('sorted_seqs', id := 0.97)\n"
+	        "GROUP BY centroid_id ORDER BY size DESC;",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"microbiome"});
 }
 
 } // namespace duckdb

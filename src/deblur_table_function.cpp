@@ -1,6 +1,7 @@
 #include "deblur_table_function.hpp"
 #include "catalog_utils.hpp"
 #include "deblur.hpp"
+#include "documented_function.hpp"
 #include "per_sample_table_function.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -11,6 +12,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
 
@@ -351,7 +353,80 @@ TableFunction DeblurTableFunction::GetFunction() {
 }
 
 void DeblurTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+[Deblur](https://github.com/biocore/deblur) amplicon-sequence
+denoising (Amir et al. 2017, *mSystems* 2:e00191-16). A greedy
+deconvolution that removes sequencing errors from amplicon data by
+iteratively subtracting expected error-derived reads from
+less-abundant sequences. Sequences whose corrected abundance rounds
+to zero are removed; the rest are denoised "sub-OTUs" (sOTUs).
+
+Designed as a composable SQL building block: dereplication is native
+SQL (`GROUP BY`), alignment is [`align_mafft`](../align_mafft/), and
+this function does the core denoising.
+
+The input must have `read_id` (VARCHAR), `sequence1` (VARCHAR), and
+`abundance` (integer type) columns. **All sequences must share the
+same aligned length AND the same unaligned length** (number of
+non-gap chars).
+
+### Named parameters
+
+- `mean_error` (DOUBLE, default `0.005`) — per-base Illumina error
+  rate. **The primary tuning knob.** Default reflects MiSeq/HiSeq
+  circa 2015. For modern NovaSeq or stitched ~250nt reads, use
+  `0.001`–`0.002`. Lower = more conservative denoising.
+- `error_profile` (LIST(DOUBLE)) — override the default 12-element
+  profile. Each element is the fraction of reads from a true sequence
+  landing at exactly that Hamming distance. Must be non-negative.
+- `indel_prob` (DOUBLE, default `0.01`) — multiplicative penalty on
+  indel-based corrections. `0` disables indel corrections.
+- `indel_max` (INTEGER, default `3`) — sequences with more than this
+  many indels are treated as real variants and protected from
+  correction.
+- `sample_id` (VARCHAR) — column on `input_table` to partition by.
+  Deblur's backend is re-entrant, so per-sample work runs in parallel
+  across DuckDB threads (bounded by `min(num_threads, num_samples)`).
+  The sample column is prepended to the output.
+
+### Output schema
+
+`read_id`, `sequence` (gaps stripped), `abundance` (banker's-rounded
+corrected abundance, BIGINT). Output is sorted by abundance
+descending. Empty input → zero rows (not an error).
+
+Single-threaded per sample (each correction depends on prior
+corrections); use `sample_id` to parallelize across samples.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"input_table"},
+	    {
+	        "-- Full workflow: trim, dereplicate, align, deblur\n"
+	        "CREATE TABLE trimmed AS\n"
+	        "  SELECT read_id, substr(sequence1, 1, 150) AS sequence1\n"
+	        "  FROM read_fastx('sample.fq')\n"
+	        "  WHERE length(sequence1) >= 150;\n"
+	        "CREATE TABLE dereplicated AS\n"
+	        "  SELECT MIN(read_id) AS read_id, sequence1, COUNT(*) AS abundance\n"
+	        "  FROM trimmed GROUP BY sequence1 HAVING COUNT(*) >= 2;\n"
+	        "CREATE TABLE aligned AS\n"
+	        "  SELECT a.read_id, a.aligned_sequence AS sequence1, d.abundance\n"
+	        "  FROM align_mafft('dereplicated') a\n"
+	        "  JOIN dereplicated d ON a.read_id = d.read_id;\n"
+	        "SELECT * FROM deblur('aligned');",
+	        "-- Minimal: pre-aligned equal-length sequences\n"
+	        "CREATE TABLE seqs(read_id VARCHAR, sequence1 VARCHAR, abundance BIGINT);\n"
+	        "INSERT INTO seqs VALUES\n"
+	        "  ('true_seq', 'ACGTACGTACGTACGT', 1000),\n"
+	        "  ('error_seq', 'ACGTACGTACGTACGA', 3);\n"
+	        "SELECT * FROM deblur('seqs');",
+	        "-- Modern NovaSeq tuning\n"
+	        "SELECT * FROM deblur('aligned_seqs', mean_error := 0.002);",
+	        "-- Custom error profile from mock community calibration\n"
+	        "SELECT * FROM deblur('aligned_seqs', error_profile := [1, 0.04, 0.01, 0.005]);",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"microbiome"});
 }
 
 } // namespace duckdb

@@ -1,4 +1,5 @@
 #include "tree_resolve_placement.hpp"
+#include "documented_function.hpp"
 #include "placement_table_reader.hpp"
 #include "tree_table_reader.hpp"
 #include "duckdb/common/vector_size.hpp"
@@ -87,7 +88,59 @@ TableFunction TreeResolvePlacementTableFunction::GetFunction() {
 }
 
 void TreeResolvePlacementTableFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Resolve phylogenetic placements into a reference tree, returning a
+fully resolved tree with placed fragments as new tips. Exposes the
+`insert_fully_resolved` algorithm as a SQL table function.
+
+Each placement creates two new nodes: an internal node that splits
+the target edge, and a fragment tip. Placements are deduplicated by
+`fragment_id` (highest `like_weight_ratio`, then lowest
+`pendant_length`); multiple placements on the same edge are sorted
+by `distal_length` and inserted as a chain. Original tip-to-tip
+distances are preserved.
+
+### Inputs
+
+- `tree_table` (VARCHAR) — table/view in
+  [`read_newick`](../read_newick/) schema. Requires `node_index` and
+  `parent_index`; `name`, `branch_length`, `edge_id` are optional.
+- `placements_table` (VARCHAR) — table/view with `fragment_id`,
+  `edge_id`, `like_weight_ratio`, `distal_length`, `pendant_length`.
+
+### Output schema
+
+Same as `read_newick` (without `filepath`): `node_index`, `name`
+(placed fragments use their `fragment_id`), `branch_length`,
+`edge_id` (NULL for newly created nodes), `parent_index`, `is_tip`.
+UNION-ALL-compatible with `read_newick` output.
+)DOC";
+
+	RegisterDocumentedTableFunction(
+	    loader, GetFunction(), description, {"tree_table", "placements_table"},
+	    {
+	        "-- Build a tree and placements, then resolve\n"
+	        "CREATE TABLE ref_tree AS SELECT * FROM read_newick('reference.nwk');\n"
+	        "CREATE TABLE placements AS SELECT * FROM (VALUES\n"
+	        "  ('seq1', 0::BIGINT, 0.95::DOUBLE, 0.05::DOUBLE, 0.001::DOUBLE),\n"
+	        "  ('seq2', 1::BIGINT, 0.80::DOUBLE, 0.10::DOUBLE, 0.002::DOUBLE)\n"
+	        ") AS t(fragment_id, edge_id, like_weight_ratio, distal_length, pendant_length);\n"
+	        "SELECT * FROM tree_resolve_placement('ref_tree', 'placements');",
+	        "-- Full jplace workflow: tree + placements both extracted from a .jplace\n"
+	        "CREATE TABLE jplace_tree AS SELECT * FROM read_jplace_newick('results.jplace');\n"
+	        "CREATE TABLE jplace_placements AS\n"
+	        "  SELECT fragment AS fragment_id, edge_num::BIGINT AS edge_id,\n"
+	        "         like_weight_ratio, distal_length, pendant_length\n"
+	        "  FROM read_jplace('results.jplace');\n"
+	        "SELECT name FROM tree_resolve_placement('jplace_tree', 'jplace_placements')\n"
+	        "WHERE is_tip = true ORDER BY name;",
+	        "-- Write the resolved tree out as Newick\n"
+	        "COPY (\n"
+	        "  SELECT node_index, name, branch_length, edge_id, parent_index\n"
+	        "  FROM tree_resolve_placement('ref_tree', 'placements')\n"
+	        ") TO 'resolved.nwk' (FORMAT NEWICK);",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"phylogeny"});
 }
 
 } // namespace duckdb
