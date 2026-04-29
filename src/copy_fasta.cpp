@@ -1,9 +1,11 @@
 #include "copy_fasta.hpp"
 #include "copy_format_common.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/function/copy_function.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <sstream>
 
 namespace duckdb {
@@ -291,6 +293,42 @@ CopyFunction CopyFastaFunction::GetFunction() {
 }
 
 void CopyFastaFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Write query results to FASTA files via `COPY ... TO '...'
+(FORMAT FASTA)`. Input must have at least `read_id` (VARCHAR) and
+`sequence1` (VARCHAR) — i.e., the schema produced by
+[`read_fastx`](../../table-functions/sequence-io/read_fastx/) for
+FASTA inputs.
+
+### Optional input columns
+
+- `comment` (VARCHAR) — included only if `INCLUDE_COMMENT=true`.
+- `sequence_index` (BIGINT) — used as the identifier when
+  `ID_AS_SEQUENCE_INDEX=true`.
+- `sequence2` (VARCHAR) — paired-end second read.
+
+### COPY parameters
+
+- `INCLUDE_COMMENT` (BOOLEAN, default `false`).
+- `ID_AS_SEQUENCE_INDEX` (BOOLEAN, default `false`).
+- `INTERLEAVE` (BOOLEAN, default `false`) — paired-end interleaved
+  output. When `false` and `sequence2` is present, use the
+  `{ORIENTATION}` placeholder to write split R1/R2 files.
+- `COMPRESSION` — gzip; auto-detected from `.gz`.
+)DOC";
+
+	RegisterDocumentedCopyFunction(loader, GetFunction(), description,
+	                               {
+	                                   "-- Round-trip FASTA\n"
+	                                   "COPY (SELECT * FROM read_fastx('input.fasta'))\n"
+	                                   "TO 'output.fasta' (FORMAT FASTA);",
+	                                   "-- Paired-end split files via {ORIENTATION}\n"
+	                                   "COPY (SELECT * FROM read_fastx('R1.fasta', 'R2.fasta'))\n"
+	                                   "TO 'output_{ORIENTATION}.fasta' (FORMAT FASTA);",
+	                                   "-- Compressed FASTA with comments preserved\n"
+	                                   "COPY (SELECT * FROM read_fastx('input.fasta'))\n"
+	                                   "TO 'output.fasta.gz' (FORMAT FASTA, INCLUDE_COMMENT true);",
+	                               },
+	                               /*alias_of=*/"", /*categories=*/{"sequence-io"});
 }
 }; // namespace duckdb

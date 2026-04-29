@@ -1,11 +1,13 @@
 #include "copy_newick.hpp"
 #include "copy_format_common.hpp"
+#include "documented_function.hpp"
 #include "NewickTree.hpp"
 #include "placement_table_reader.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/function/copy_function.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
 
@@ -380,7 +382,60 @@ CopyFunction CopyNewickFunction::GetFunction() {
 }
 
 void CopyNewickFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Write query results to a Newick tree file via `COPY ... TO '...'
+(FORMAT NEWICK)`. Reconstructs the tree from tabular node data and
+serializes it. Input must have `node_index` (BIGINT) and
+`parent_index` (BIGINT, nullable; NULL for root). `name`,
+`branch_length`, and `edge_id` are optional.
+
+Tree structure is validated at write time: exactly one root, all
+parent references valid, no cycles, all nodes connected. Extra
+columns (`is_tip`, `filepath`, etc.) are ignored.
+
+### COPY parameters
+
+- `EDGE_IDS` (BOOLEAN, default auto) — include edge identifiers
+  `{n}` in the output. Default is `true` if an `edge_id` column
+  exists, `false` otherwise.
+- `COMPRESSION` — `'gzip'` or `'none'`; auto-detected from `.gz`.
+- `PLACEMENTS` (VARCHAR) — name of a table with phylogenetic
+  placement rows (`fragment_id`, `edge_id`, `like_weight_ratio`,
+  `distal_length`, `pendant_length`). Each placement is inserted as
+  a tip on the named edge; duplicates are deduplicated by highest
+  `like_weight_ratio`. Requires the input tree to have an `edge_id`
+  column.
+)DOC";
+
+	RegisterDocumentedCopyFunction(
+	    loader, GetFunction(), description,
+	    {
+	        "-- Round-trip a Newick tree\n"
+	        "COPY (SELECT * FROM read_newick('input.nwk'))\n"
+	        "TO 'output.nwk' (FORMAT NEWICK);",
+	        "-- Compressed output, explicit\n"
+	        "COPY (SELECT * FROM read_newick('input.nwk'))\n"
+	        "TO 'output.nwk' (FORMAT NEWICK, COMPRESSION 'gzip');",
+	        "-- Edge IDs preserved for jplace compatibility\n"
+	        "COPY (SELECT * FROM read_newick('reference.nwk'))\n"
+	        "TO 'with_edges.nwk' (FORMAT NEWICK, EDGE_IDS true);",
+	        "-- Build a tiny tree from VALUES, then write it\n"
+	        "CREATE TABLE my_tree AS SELECT * FROM (VALUES\n"
+	        "  (0, NULL::BIGINT, '', 0.0),\n"
+	        "  (1, 0, 'A', 0.1),\n"
+	        "  (2, 0, 'B', 0.2)\n"
+	        ") AS t(node_index, parent_index, name, branch_length);\n"
+	        "COPY (SELECT * FROM my_tree)\n"
+	        "TO 'new_tree.nwk' (FORMAT NEWICK);",
+	        "-- Insert phylogenetic placements at write time\n"
+	        "CREATE TABLE placements AS SELECT * FROM (VALUES\n"
+	        "  ('fragment_1', 0::BIGINT, 0.95::DOUBLE, 0.05::DOUBLE, 0.001::DOUBLE),\n"
+	        "  ('fragment_2', 1::BIGINT, 0.80::DOUBLE, 0.10::DOUBLE, 0.002::DOUBLE)\n"
+	        ") AS t(fragment_id, edge_id, like_weight_ratio, distal_length, pendant_length);\n"
+	        "COPY (SELECT * FROM read_newick('reference.nwk'))\n"
+	        "TO 'placed.nwk' (FORMAT NEWICK, PLACEMENTS 'placements');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"phylogeny"});
 }
 
 } // namespace duckdb

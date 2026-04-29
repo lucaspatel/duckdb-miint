@@ -1,4 +1,5 @@
 #include "copy_sam.hpp"
+#include "documented_function.hpp"
 #include "reference_table_reader.hpp"
 #include "sequence_data_reader.hpp"
 #include "sequence_utils.hpp"
@@ -9,6 +10,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/function/copy_function.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <htslib-1.22.1/htslib/sam.h>
 #include <htslib-1.22.1/htslib/hts.h>
 #include <unordered_map>
@@ -880,8 +882,76 @@ CopyFunction CopySAMFunction::GetBAMFunction() {
 }
 
 void CopySAMFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
-	loader.RegisterFunction(GetBAMFunction());
+	static const std::string sam_description = R"DOC(
+Write query results to SAM files via `COPY ... TO '...'
+(FORMAT SAM)`. Input must contain the mandatory SAM columns produced
+by [`read_alignments`](../../table-functions/alignment-io/read_alignments/):
+`read_id`, `flags`, `reference`, `position`, `mapq`, `cigar`,
+`mate_reference`, `mate_position`, `template_length`. Optional tag
+columns (`tag_as`..`tag_sa`) are preserved if present.
+
+### COPY parameters
+
+- `INCLUDE_HEADER` (BOOLEAN, default `true`).
+- `REFERENCE_LENGTHS` (VARCHAR, required when `INCLUDE_HEADER=true`)
+  — name of a table/view whose first two columns are
+  `(reference_name VARCHAR, length INTEGER/BIGINT)`. Column names
+  don't matter; views are fully supported.
+- `SEQUENCE_DATA` (VARCHAR) — table/view of original FASTQ records
+  (`read_id`, `sequence1`, `qual1`, optional `sequence2`/`qual2`).
+  When set, real SEQ/QUAL replace the default `*` placeholders;
+  hard-clip CIGAR ops trim, and reverse-strand reads are
+  reverse-complemented at write time.
+- `COMPRESSION` — gzip; auto-detected from `.gz`.
+)DOC";
+	RegisterDocumentedCopyFunction(
+	    loader, GetFunction(), sam_description,
+	    {
+	        "-- Round-trip SAM with a header from a small ref table\n"
+	        "CREATE TABLE ref_table AS SELECT 'genome1' AS name, 248956422 AS length\n"
+	        "  UNION ALL SELECT 'genome2', 242193529;\n"
+	        "COPY (SELECT * FROM read_alignments('input.sam'))\n"
+	        "TO 'output.sam' (FORMAT SAM, REFERENCE_LENGTHS 'ref_table');",
+	        "-- Headerless SAM (no REFERENCE_LENGTHS needed)\n"
+	        "COPY (SELECT * FROM read_alignments('input.sam'))\n"
+	        "TO 'output.sam' (FORMAT SAM, INCLUDE_HEADER false);",
+	        "-- Filter to high-quality alignments, then write headerless\n"
+	        "COPY (\n"
+	        "  SELECT * FROM read_alignments('input.sam')\n"
+	        "  WHERE mapq >= 30 AND NOT alignment_is_unmapped(flags)\n"
+	        ") TO 'filtered.sam' (FORMAT SAM, INCLUDE_HEADER false);",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-io"});
+
+	static const std::string bam_description = R"DOC(
+Write query results to BAM files via `COPY ... TO '...'
+(FORMAT BAM)`. Identical input schema to
+[`COPY ... (FORMAT SAM)`](../sam/) — see that page for the column
+list and `SEQUENCE_DATA` semantics. BAM is always written with a
+header (binary spec requirement); `INCLUDE_HEADER=false` is
+rejected.
+
+### Additional COPY parameter
+
+- `COMPRESSION_LEVEL` (INTEGER 0–9, default `6`) — BGZF compression.
+  Higher = smaller files, slower. `0` writes uncompressed BAM.
+)DOC";
+	RegisterDocumentedCopyFunction(
+	    loader, GetBAMFunction(), bam_description,
+	    {
+	        "-- Basic BAM with header\n"
+	        "COPY (SELECT * FROM read_alignments('input.sam'))\n"
+	        "TO 'output.bam' (FORMAT BAM, REFERENCE_LENGTHS 'ref_table');",
+	        "-- Maximum-compression BAM\n"
+	        "COPY (SELECT * FROM read_alignments('input.bam'))\n"
+	        "TO 'compressed.bam' (FORMAT BAM, COMPRESSION_LEVEL 9, REFERENCE_LENGTHS 'ref_table');",
+	        "-- BAM with SEQ/QUAL populated from a separate FASTQ table\n"
+	        "CREATE TABLE sequences AS SELECT * FROM read_fastx('R1.fastq', 'R2.fastq');\n"
+	        "COPY (SELECT * FROM read_alignments('input.bam'))\n"
+	        "TO 'with_seq.bam' (FORMAT BAM, REFERENCE_LENGTHS 'ref_table',\n"
+	        "                   SEQUENCE_DATA 'sequences');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"alignment-io"});
 }
 
 } // namespace duckdb

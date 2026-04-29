@@ -1,10 +1,12 @@
 #include "copy_fastq.hpp"
 #include "copy_format_common.hpp"
+#include "documented_function.hpp"
 #include "QualScore.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/function/copy_function.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <sstream>
 
 namespace duckdb {
@@ -366,7 +368,54 @@ CopyFunction CopyFastqFunction::GetFunction() {
 }
 
 void CopyFastqFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Write query results to FASTQ files via `COPY ... TO '...'
+(FORMAT FASTQ)`. Input must have at least `read_id` (VARCHAR),
+`sequence1` (VARCHAR) and `qual1` (BLOB) — i.e., the schema produced
+by [`read_fastx`](../../table-functions/sequence-io/read_fastx/) for
+FASTQ inputs.
+
+### Optional input columns
+
+- `comment` (VARCHAR) — included only if `INCLUDE_COMMENT=true`.
+- `sequence_index` (BIGINT) — used as the identifier when
+  `ID_AS_SEQUENCE_INDEX=true`.
+- `sequence2` (VARCHAR), `qual2` (BLOB) — paired-end second read.
+
+### COPY parameters
+
+- `QUAL_OFFSET` (INTEGER, default `33`) — quality-score encoding
+  offset (`33` for Phred+33, `64` for Phred+64).
+- `INCLUDE_COMMENT` (BOOLEAN, default `false`) — include the
+  `comment` column in the output records.
+- `ID_AS_SEQUENCE_INDEX` (BOOLEAN, default `false`) — use
+  `sequence_index` as the record identifier.
+- `INTERLEAVE` (BOOLEAN, default `false`) — paired-end output is
+  interleaved into a single file. When `false` and `sequence2` is
+  present, use the `{ORIENTATION}` placeholder in the output path
+  to write split R1/R2 files.
+- `COMPRESSION` — gzip; auto-detected from a `.gz` file extension.
+)DOC";
+
+	RegisterDocumentedCopyFunction(loader, GetFunction(), description,
+	                               {
+	                                   "-- Round-trip FASTQ\n"
+	                                   "COPY (SELECT * FROM read_fastx('input.fastq'))\n"
+	                                   "TO 'output.fastq' (FORMAT FASTQ);",
+	                                   "-- Paired-end interleaved into a single file\n"
+	                                   "COPY (SELECT * FROM read_fastx('R1.fastq', 'R2.fastq'))\n"
+	                                   "TO 'output.fastq' (FORMAT FASTQ, INTERLEAVE true);",
+	                                   "-- Paired-end split via the {ORIENTATION} placeholder\n"
+	                                   "COPY (SELECT * FROM read_fastx('R1.fastq', 'R2.fastq'))\n"
+	                                   "TO 'output_{ORIENTATION}.fastq' (FORMAT FASTQ);",
+	                                   "-- Compressed FASTQ with explicit Phred offset\n"
+	                                   "COPY (SELECT * FROM read_fastx('input.fastq'))\n"
+	                                   "TO 'output.fastq.gz' (FORMAT FASTQ, QUAL_OFFSET 33, COMPRESSION gzip);",
+	                                   "-- Identifier from sequence_index instead of read_id\n"
+	                                   "COPY (SELECT * FROM read_fastx('input.fastq'))\n"
+	                                   "TO 'output.fastq' (FORMAT FASTQ, ID_AS_SEQUENCE_INDEX true);",
+	                               },
+	                               /*alias_of=*/"", /*categories=*/{"sequence-io"});
 }
 
 } // namespace duckdb

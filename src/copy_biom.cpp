@@ -1,9 +1,11 @@
 #include "copy_biom.hpp"
 #include "BIOMTable.hpp"
+#include "documented_function.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/function/copy_function.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "H5Cpp.h"
 #include <chrono>
 #include <iomanip>
@@ -480,7 +482,59 @@ CopyFunction CopyBiomFunction::GetFunction() {
 }
 
 void CopyBiomFunction::Register(ExtensionLoader &loader) {
-	loader.RegisterFunction(GetFunction());
+	static const std::string description = R"DOC(
+Write query results to a [BIOM](https://biom-format.org/)
+(Biological Observation Matrix) file via `COPY ... TO '...'
+(FORMAT BIOM)`. BIOM is an HDF5-backed format commonly used for
+OGU/OTU/ASV abundance tables in microbiome analyses.
+
+Input must have `feature_id` (VARCHAR), `sample_id` (VARCHAR), and
+`value` (DOUBLE) columns. Duplicate `(feature_id, sample_id)` pairs
+are summed automatically; zero values are dropped (sparse output).
+Feature and sample IDs appear in order of first occurrence. NULLs in
+any required column are an error.
+
+### COPY parameters
+
+- `COMPRESSION` — HDF5 internal compression: `'gzip'` (recommended),
+  `'lzf'`, or `'none'` (default).
+- `ID` (VARCHAR) — custom table identifier in the BIOM metadata.
+  Auto-generated if not set.
+- `GENERATED_BY` (VARCHAR, default `'DuckDB-MIINT'`) — provenance
+  string written into the BIOM metadata.
+
+Output is compatible with QIIME2
+(`qiime tools import --type 'FeatureTable[Frequency]'`),
+phyloseq's `import_biom`, the `biom-format` Python package, and this
+extension's [`read_biom`](../../table-functions/microbiome/read_biom/).
+)DOC";
+
+	RegisterDocumentedCopyFunction(
+	    loader, GetFunction(), description,
+	    {
+	        "-- BIOM straight out of woltka_ogu()\n"
+	        "COPY (\n"
+	        "  SELECT * FROM woltka_ogu('my_alignments', 'read_id', sample_id := 'sample_id')\n"
+	        ") TO 'ogu_table.biom' (FORMAT BIOM);",
+	        "-- gzip-compressed output (recommended for size)\n"
+	        "COPY (\n"
+	        "  SELECT * FROM woltka_ogu('my_alignments', 'read_id', sample_id := 'sample_id')\n"
+	        ") TO 'ogu_table.biom' (FORMAT BIOM, COMPRESSION 'gzip');",
+	        "-- Custom metadata for downstream tools\n"
+	        "COPY (\n"
+	        "  SELECT * FROM woltka_ogu('my_alignments', 'read_id', sample_id := 'sample_id')\n"
+	        ") TO 'ogu_table.biom' (FORMAT BIOM, COMPRESSION 'gzip',\n"
+	        "                       ID 'MyStudy_16S',\n"
+	        "                       GENERATED_BY 'DuckDB-MIINT v1.0 + Woltka algorithm');",
+	        "-- Duplicates are summed, zeros dropped\n"
+	        "CREATE TABLE feature_counts AS SELECT * FROM (VALUES\n"
+	        "  ('OGU_001', 'Sample_A', 45.0), ('OGU_001', 'Sample_B', 32.0),\n"
+	        "  ('OGU_002', 'Sample_A', 18.0), ('OGU_002', 'Sample_B', 27.0)\n"
+	        ") AS t(feature_id, sample_id, value);\n"
+	        "COPY (SELECT * FROM feature_counts)\n"
+	        "TO 'counts.biom' (FORMAT BIOM, COMPRESSION 'gzip');",
+	    },
+	    /*alias_of=*/"", /*categories=*/{"microbiome"});
 }
 
 } // namespace duckdb
