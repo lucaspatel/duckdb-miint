@@ -155,6 +155,142 @@ std::string SqlQuote(const std::string &s) {
 
 } // namespace
 
+namespace {
+
+std::vector<CopyDocEntry> &MutableCopyDocsRegistry() {
+	static std::vector<CopyDocEntry> registry;
+	return registry;
+}
+
+} // namespace
+
+const std::vector<CopyDocEntry> &GetCopyDocsRegistry() {
+	return MutableCopyDocsRegistry();
+}
+
+void RegisterDocumentedCopyFunction(ExtensionLoader &loader, CopyFunction function, const std::string &description,
+                                    const std::vector<std::string> &examples, const std::string &alias_of,
+                                    std::initializer_list<const char *> categories) {
+	CopyDocEntry entry;
+	entry.name = function.name;
+	entry.description = description;
+	entry.examples = examples;
+	for (const auto *c : categories) {
+		entry.categories.emplace_back(c);
+	}
+	entry.alias_of = alias_of;
+	MutableCopyDocsRegistry().push_back(std::move(entry));
+
+	loader.RegisterFunction(std::move(function));
+}
+
+void RegisterCopyDocsMacro(ExtensionLoader &loader) {
+	const auto &registry = GetCopyDocsRegistry();
+	std::string sql = "CREATE OR REPLACE MACRO miint_documented_copy_functions() AS TABLE ";
+	if (registry.empty()) {
+		sql += "SELECT NULL::VARCHAR AS name, NULL::VARCHAR AS description, "
+		       "NULL::VARCHAR[] AS examples, NULL::VARCHAR[] AS categories, "
+		       "NULL::VARCHAR AS alias_of WHERE FALSE;";
+	} else {
+		auto sql_list = [](const std::vector<std::string> &xs) {
+			std::string out = "[";
+			for (size_t i = 0; i < xs.size(); ++i) {
+				if (i > 0) {
+					out += ", ";
+				}
+				out += SqlQuote(xs[i]);
+			}
+			out += "]";
+			return out;
+		};
+		sql += "SELECT * FROM (VALUES ";
+		for (size_t i = 0; i < registry.size(); ++i) {
+			if (i > 0) {
+				sql += ", ";
+			}
+			const auto &e = registry[i];
+			sql += "(" + SqlQuote(e.name) + ", " + SqlQuote(e.description) + ", " + sql_list(e.examples) + ", " +
+			       sql_list(e.categories) + ", " + SqlQuote(e.alias_of) + ")";
+		}
+		sql += ") AS t(name, description, examples, categories, alias_of);";
+	}
+	Connection con(loader.GetDatabaseInstance());
+	auto result = con.Query(sql);
+	if (result->HasError()) {
+		throw InternalException("Failed to register miint_documented_copy_functions macro: %s", result->GetError());
+	}
+}
+
+namespace {
+
+std::vector<MacroDocEntry> &MutableMacroDocsRegistry() {
+	static std::vector<MacroDocEntry> registry;
+	return registry;
+}
+
+} // namespace
+
+const std::vector<MacroDocEntry> &GetMacroDocsRegistry() {
+	return MutableMacroDocsRegistry();
+}
+
+void RegisterDocumentedMacro(ExtensionLoader &loader, const std::string &name, const std::string &sql_body,
+                             const std::string &description, const std::vector<std::string> &examples,
+                             const std::string &alias_of, std::initializer_list<const char *> categories) {
+	Connection con(loader.GetDatabaseInstance());
+	auto result = con.Query(sql_body);
+	if (result->HasError()) {
+		throw InternalException("Failed to register macro '%s': %s", name, result->GetError());
+	}
+
+	MacroDocEntry entry;
+	entry.name = name;
+	entry.description = description;
+	entry.examples = examples;
+	for (const auto *c : categories) {
+		entry.categories.emplace_back(c);
+	}
+	entry.alias_of = alias_of;
+	MutableMacroDocsRegistry().push_back(std::move(entry));
+}
+
+void RegisterMacroDocsMacro(ExtensionLoader &loader) {
+	const auto &registry = GetMacroDocsRegistry();
+	std::string sql = "CREATE OR REPLACE MACRO miint_documented_macros() AS TABLE ";
+	if (registry.empty()) {
+		sql += "SELECT NULL::VARCHAR AS name, NULL::VARCHAR AS description, "
+		       "NULL::VARCHAR[] AS examples, NULL::VARCHAR[] AS categories, "
+		       "NULL::VARCHAR AS alias_of WHERE FALSE;";
+	} else {
+		auto sql_list = [](const std::vector<std::string> &xs) {
+			std::string out = "[";
+			for (size_t i = 0; i < xs.size(); ++i) {
+				if (i > 0) {
+					out += ", ";
+				}
+				out += SqlQuote(xs[i]);
+			}
+			out += "]";
+			return out;
+		};
+		sql += "SELECT * FROM (VALUES ";
+		for (size_t i = 0; i < registry.size(); ++i) {
+			if (i > 0) {
+				sql += ", ";
+			}
+			const auto &e = registry[i];
+			sql += "(" + SqlQuote(e.name) + ", " + SqlQuote(e.description) + ", " + sql_list(e.examples) + ", " +
+			       sql_list(e.categories) + ", " + SqlQuote(e.alias_of) + ")";
+		}
+		sql += ") AS t(name, description, examples, categories, alias_of);";
+	}
+	Connection con(loader.GetDatabaseInstance());
+	auto result = con.Query(sql);
+	if (result->HasError()) {
+		throw InternalException("Failed to register miint_documented_macros macro: %s", result->GetError());
+	}
+}
+
 void RegisterDoctestMacro(ExtensionLoader &loader) {
 	const auto &registry = GetDoctestRegistry();
 	std::string sql = "CREATE OR REPLACE MACRO miint_doctest_examples() AS TABLE ";

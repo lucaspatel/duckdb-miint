@@ -285,6 +285,14 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Must run AFTER every RegisterDocumented*() call so the doctest
 	// registry is fully populated when the macro is built.
 	RegisterDoctestMacro(loader);
+	// Same ordering requirement for the COPY-format docs sidecar (the
+	// catalog has no fields for COPY descriptions, so we route them via
+	// an in-process registry exposed as a SQL macro).
+	RegisterCopyDocsMacro(loader);
+	// And for the SQL-macro docs overlay — descriptions/examples for
+	// macros registered via SQL strings are stored in an in-process
+	// registry and joined by name into the docs build.
+	RegisterMacroDocsMacro(loader);
 }
 
 void MiintExtension::Load(ExtensionLoader &loader) {

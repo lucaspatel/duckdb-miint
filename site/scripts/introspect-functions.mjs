@@ -114,6 +114,69 @@ WHERE NOT EXISTS (
 );
 `);
 
+// COPY-format docs: CreateCopyFunctionInfo upstream has no description /
+// examples / categories fields, so the catalog can't surface them. We route
+// COPY docs through an extension-internal registry exposed as the SQL macro
+// miint_documented_copy_functions(). Pull it here and synthesize functions.json
+// rows that match the duckdb_functions() shape so the generator's bucketing
+// pass treats them uniformly. If the macro doesn't exist (e.g. introspecting
+// an older released artifact), skip silently.
+let copyFns = [];
+try {
+  copyFns = runDuckDB(`
+${loadStmt};
+SELECT name AS function_name,
+       'copy' AS function_type,
+       NULLIF(alias_of, '') AS alias_of,
+       description,
+       examples,
+       categories
+FROM miint_documented_copy_functions();
+`);
+} catch (_) {
+  // ignore — macro unavailable in this build
+}
+for (const fn of copyFns) {
+  newFns.push({
+    function_name: fn.function_name,
+    function_type: fn.function_type,
+    alias_of: fn.alias_of,
+    description: fn.description,
+    parameters: [],
+    parameter_types: [],
+    return_type: null,
+    examples: fn.examples ?? [],
+    categories: fn.categories ?? [],
+  });
+}
+
+// SQL-macro docs overlay: macros DO appear in duckdb_functions() with their
+// proper function_type, but registered via SQL strings their description /
+// examples / categories aren't populated. miint_documented_macros() carries
+// the docs separately; merge them by name into the existing macro /
+// table_macro rows. Skip silently if the macro isn't registered (older
+// released artifact).
+let macroDocs = [];
+try {
+  macroDocs = runDuckDB(`
+${loadStmt};
+SELECT name, description, examples, categories, NULLIF(alias_of, '') AS alias_of
+FROM miint_documented_macros();
+`);
+} catch (_) {
+  // ignore
+}
+const macroDocsByName = new Map(macroDocs.map((r) => [r.name, r]));
+for (const fn of newFns) {
+  if (fn.function_type !== 'macro' && fn.function_type !== 'table_macro') continue;
+  const doc = macroDocsByName.get(fn.function_name);
+  if (!doc) continue;
+  if (!fn.description && doc.description) fn.description = doc.description;
+  if ((!fn.examples || !fn.examples.length) && doc.examples) fn.examples = doc.examples;
+  if ((!fn.categories || !fn.categories.length) && doc.categories) fn.categories = doc.categories;
+  if (!fn.alias_of && doc.alias_of) fn.alias_of = doc.alias_of;
+}
+
 // Group overloads under a single name so the generator emits one page per name.
 const grouped = new Map();
 for (const fn of newFns) {

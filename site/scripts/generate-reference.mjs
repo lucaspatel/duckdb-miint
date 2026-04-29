@@ -51,6 +51,56 @@ const POC_SLICE = new Set([
   'compute_coverage_depth',
   // formula_function.cpp
   'formula',
+  // read_newick.cpp + read_jplace_newick.cpp
+  'read_newick', 'read_jplace_newick',
+  // read_sequences_sam.cpp + read_sequences_sff.cpp
+  'read_sequences_sam', 'read_sequences_sff',
+  // read_biom.cpp
+  'read_biom',
+  // read_fastx.cpp
+  'read_fastx',
+  // read_mzml.cpp + read_mzml_chromatograms.cpp + read_mzxml.cpp
+  'read_mzml', 'read_mzml_chromatograms', 'read_mzxml',
+  // read_ncbi*.cpp
+  'read_ncbi', 'read_ncbi_fasta', 'read_ncbi_annotation',
+  // read_ena*.cpp
+  'read_ena', 'read_ena_attributes', 'ena_searchable_fields', 'read_ena_sequences',
+  // align_*.cpp (aligners, Phase 5)
+  'align_minimap2', 'save_minimap2_index', 'align_minimap2_sharded',
+  'align_bowtie2', 'bowtie2_available', 'align_bowtie2_sharded',
+  'align_mafft', 'align_sortmerna', 'align_sortmerna_rrna',
+  // Phase 7 — analysis grab-bag
+  'alignment_slice',
+  'cluster_sequences_vsearch', 'search_sequences_vsearch', 'deblur',
+  'tree_resolve_placement',
+  'woltka_ogu',
+  // Phase 8 — mass spec
+  'massql', 'massql_to_sql', 'mzml_peak_pair',
+  // Phase 9 — Rype
+  'rype_classify', 'rype_log_ratio',
+  'rype_extract_minimizer_set', 'rype_extract_strand_minimizers',
+  // Phase 6 — COPY formats (routed via miint_documented_copy_functions)
+  'fastq', 'fasta', 'sam', 'bam', 'newick', 'biom',
+  // Phase 3 cleanup
+  'detect_chimera_uchime', 'detect_chimera_uchime_denovo',
+  'merge_pairs_vsearch',
+  'align_pairwise_score', 'align_pairwise_cigar', 'align_pairwise_full',
+  // Phase 10 — SQL macros (descriptions overlaid via miint_documented_macros)
+  'miint_warnings',
+  'parse_gff_attributes', 'read_gff', 'genome_coverage', 'read_jplace',
+  'mz_within', 'mz_within_ppm', 'massdefect', 'mz_massdefect_within',
+  'mzml_peaks', 'mzml_scaninfo', 'mzml_scansum', 'mzml_scannum',
+  'mzml_scanmz', 'mzml_scanmaxint',
+  'mzml_ms1_peaks', 'mzml_ms2_peaks', 'mzml_ms1_parent_peaks', 'mzml_ms2_child_peaks',
+  'mzml_ms1_where_ms2prod', 'mzml_ms2_where_ms1mz',
+  'mzml_ms1_where_ms2prec', 'mzml_ms2_where_ms2prod_and_ms1mz',
+  'mzml_filter_mz', 'mzml_filter_nl',
+  'mzml_x_offset_ntuple', 'mzml_x_offset_pair', 'mzml_x_offset_triplet',
+  'mzml_x_prec_prod', 'mzml_x_prec_massdefect', 'mzml_x_ms1_ms2_prec',
+  'mzml_x_offset_pair_range', 'mzml_or_cardinality',
+  'mzml_i_norm', 'mzml_i_tic_norm',
+  'mzml_excluded_ms2prod', 'mzml_excluded_ms1mz', 'mzml_excluded_ms2prec',
+  'mzml_isotope_pattern',
 ]);
 
 // Per-function-type metadata. Keys must match `function_type` values from
@@ -59,12 +109,16 @@ const TYPES = {
   table:       { dir: 'table-functions',     label: 'Table functions'     },
   scalar:      { dir: 'scalar-functions',    label: 'Scalar functions'    },
   aggregate:   { dir: 'aggregate-functions', label: 'Aggregate functions' },
+  copy:        { dir: 'copy-formats',        label: 'COPY formats'        },
   table_macro: { dir: 'table-macros',        label: 'Table macros'        },
   macro:       { dir: 'macros',              label: 'Macros'              },
 };
-const TYPE_ORDER = ['table', 'scalar', 'aggregate', 'table_macro', 'macro'];
+const TYPE_ORDER = ['table', 'scalar', 'aggregate', 'copy', 'table_macro', 'macro'];
 // Acronyms preserved as uppercase by humanizeCategory.
-const ACRONYMS = new Set(['sam', 'bam', 'io', 'qc', 'cigar', 'md', 'nm', 'rna', 'dna']);
+const ACRONYMS = new Set([
+  'sam', 'bam', 'io', 'qc', 'cigar', 'md', 'nm', 'rna', 'dna',
+  'ena', 'ncbi', 'mzml', 'mzxml', 'sff', 'ogu', 'otu', 'asv', 'msa',
+]);
 const UNCATEGORIZED = '_uncategorized';
 
 // Fixed taxonomy. Every category attached to a RegisterDocumented* call
@@ -282,18 +336,24 @@ function renderPage(fn, primary, category) {
     ? `${primary.description.trim()}\n\n`
     : `_No description set yet. Add one to the C++ registration._\n\n`;
 
-  const signatures = fn.variants.map((v, i) => {
-    const params = v.parameters.map((p, j) => {
-      const t = v.parameter_types[j] ?? 'ANY';
-      // DuckDB returns col0/col1/... when parameter_names weren't set in
-      // FunctionDescription — flag visually so the gap is obvious.
-      const name = /^col\d+$/.test(p) ? `_${p}_` : p;
-      return `${name} ${t}`;
-    }).join(', ');
-    const ret = v.return_type ?? 'TABLE';
-    const heading = fn.variants.length > 1 ? `### Signature ${i + 1}\n\n` : '';
-    return `${heading}\`\`\`text\n${fn.name}(${params}) → ${ret}\n\`\`\`\n`;
-  }).join('\n');
+  // COPY formats use SQL `COPY ... TO '...' (FORMAT <NAME>)` rather than a
+  // function-call signature, and CreateCopyFunctionInfo carries no parameter
+  // types upstream — synthesize the SQL form instead of emitting an empty
+  // function-call.
+  const signatures = fn.type === 'copy'
+    ? `\`\`\`sql\nCOPY (...) TO '...' (FORMAT ${fn.name.toUpperCase()})\n\`\`\`\n`
+    : fn.variants.map((v, i) => {
+        const params = v.parameters.map((p, j) => {
+          const t = v.parameter_types[j] ?? 'ANY';
+          // DuckDB returns col0/col1/... when parameter_names weren't set in
+          // FunctionDescription — flag visually so the gap is obvious.
+          const name = /^col\d+$/.test(p) ? `_${p}_` : p;
+          return `${name} ${t}`;
+        }).join(', ');
+        const ret = v.return_type ?? 'TABLE';
+        const heading = fn.variants.length > 1 ? `### Signature ${i + 1}\n\n` : '';
+        return `${heading}\`\`\`text\n${fn.name}(${params}) → ${ret}\n\`\`\`\n`;
+      }).join('\n');
 
   const seen = new Set();
   const allExamples = [];

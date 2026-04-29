@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb/common/vector.hpp"
+#include "duckdb/function/copy_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -107,5 +108,51 @@ void RegisterDocumentedTableFunction(ExtensionLoader &loader, TableFunction func
                                      const std::vector<std::string> &examples, const std::string &alias_of = "",
                                      std::initializer_list<const char *> categories = {},
                                      const std::vector<std::string> &executable_examples = {});
+
+// COPY-format docs registry entry. CreateCopyFunctionInfo upstream has no
+// description / examples / categories fields, so the catalog can't surface
+// these. Instead each RegisterDocumentedCopyFunction call appends one
+// CopyDocEntry to an extension-internal registry, exposed via the
+// miint_documented_copy_functions() macro (built by RegisterCopyDocsMacro
+// at the end of LoadInternal). The introspector reads that macro to merge
+// COPY pages into the same docs pipeline as scalars/tables/aggregates.
+struct CopyDocEntry {
+	std::string name;
+	std::string description;
+	std::vector<std::string> examples;
+	std::vector<std::string> categories;
+	std::string alias_of;
+};
+const std::vector<CopyDocEntry> &GetCopyDocsRegistry();
+
+void RegisterDocumentedCopyFunction(ExtensionLoader &loader, CopyFunction function, const std::string &description,
+                                    const std::vector<std::string> &examples, const std::string &alias_of = "",
+                                    std::initializer_list<const char *> categories = {});
+
+void RegisterCopyDocsMacro(ExtensionLoader &loader);
+
+// SQL macro docs sidecar. Macros are registered via SQL strings
+// (`CREATE OR REPLACE MACRO ...`) so descriptions can't piggyback on the
+// CreateMacroInfo path the way scalar/aggregate/table-function descriptions
+// do. Each RegisterDocumentedMacro call runs the CREATE statement AND
+// appends a MacroDocEntry to an in-process registry, exposed via the
+// miint_documented_macros() macro (built by RegisterMacroDocsMacro at the
+// end of LoadInternal). The introspector merges those docs by name into
+// the macro / table_macro rows it diffs out of duckdb_functions().
+struct MacroDocEntry {
+	std::string name;
+	std::string description;
+	std::vector<std::string> examples;
+	std::vector<std::string> categories;
+	std::string alias_of;
+};
+const std::vector<MacroDocEntry> &GetMacroDocsRegistry();
+
+void RegisterDocumentedMacro(ExtensionLoader &loader, const std::string &name, const std::string &sql_body,
+                             const std::string &description, const std::vector<std::string> &examples,
+                             const std::string &alias_of = "",
+                             std::initializer_list<const char *> categories = {});
+
+void RegisterMacroDocsMacro(ExtensionLoader &loader);
 
 } // namespace duckdb
